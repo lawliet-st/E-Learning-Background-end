@@ -23,6 +23,7 @@ class UploadRequest(BaseModel):
 class ChatRequest(BaseModel):
     courseTitle: str
     question: str
+    courseId: Optional[str] = None
 
 class VisualRequest(BaseModel):
     description: str

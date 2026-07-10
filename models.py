@@ -49,6 +49,7 @@ class Course(Base):
     
     attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     questions: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON, nullable=True)
+    compulsory_targets: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     learning_records: Mapped[List["LearningRecord"]] = relationship(
         back_populates="course",
