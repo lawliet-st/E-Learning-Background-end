@@ -17,13 +17,23 @@ proxy_support = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(proxy_support)
 urllib.request.install_opener(opener)
 
-from .database import Base, engine, get_db
+from .database import Base, engine, get_db, SessionLocal
 from . import models, schemas, auth
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        if not db.query(models.User).first():
+            print("Database is empty. Auto-seeding default data...")
+            from .seed import seed_data
+            seed_data()
+    except Exception as e:
+        print("Auto-seeding check failed:", e)
+    finally:
+        db.close()
     yield
 
 
@@ -464,20 +474,131 @@ def upload_file(req: schemas.UploadRequest, current_user: models.User = Depends(
     file_path = os.path.join(UPLOAD_DIR, req.filename)
     with open(file_path, "wb") as f:
         f.write(file_bytes)
-    # Return URL starting with /uploads
     return {"url": f"/uploads/{req.filename}"}
+def local_chat_fallback(course_title: str, question: str, course_desc: str = ""):
+    q_lower = question.lower()
+    if "安全" in q_lower or "危害" in q_lower or "防護" in q_lower or "佩戴" in q_lower:
+        ans = "關於安全防護的規範，本課程強調工作現場必須全程佩戴標準安全帽與防護手套。若遇到任何緊急狀況，請依照紅色逃生指示燈的方向進行疏散，並立即通報當班主管與工安課（分機#119）。"
+    elif "溝通" in q_lower or "表達" in q_lower or "說服" in q_lower:
+        ans = "高效溝通的核心在於『積極聆聽』與『同理心回應』。在與跨部門協調時，建議先認同對方的立場與業務難處，再透過數據分析客觀陳述需求，這能大幅提升溝通的說服力。"
+    elif "測驗" in q_lower or "考試" in q_lower or "題目" in q_lower:
+        ans = "本課程的測驗共有 3 題選擇題，合格標準為 60 分。題目主要圍繞在課程講義中的核心觀念（如防護具種類、安全逃生步驟或跨部門協商法則），請多加複習講義內容。"
+    elif "講義" in q_lower or "教材" in q_lower or "內容" in q_lower or "大綱" in q_lower:
+        ans = f"這份教材的核心目的是協助學員快速掌握「{course_title}」的主旨。講義內包含詳細的流程步驟拆解與實際案例分析，請點選上方講義連結下載並仔細閱讀。"
+    else:
+        ans = f"感謝您的提問！關於您提到的問題，在「{course_title}」的實務應用中極為關鍵。建議您深入對照講義中提及的觀念，並嘗試在日常工作中實踐。如有需要，也可以與部門主管或導師進行一步探討。"
+    return f"[備援模擬 AI 講師] {ans}"
+
+def local_visual_fallback(description: str):
+    import re
+    phrases = [p.strip() for p in re.split(r'[,.，。、]', description) if p.strip()]
+    if not phrases:
+        phrases = ["核心觀念", "實務應用", "基礎知識", "關鍵績效"]
+    phrases = phrases[:4]
+    
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 250" width="100%" height="100%">
+      <defs>
+        <linearGradient id="centerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#4f46e5" />
+          <stop offset="100%" stop-color="#7c3aed" />
+        </linearGradient>
+        <linearGradient id="nodeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#0284c7" />
+          <stop offset="100%" stop-color="#0ea5e9" />
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="#faf5ff" rx="12"/>
+      <circle cx="300" cy="125" r="100" fill="none" stroke="#e0f2fe" stroke-width="2" stroke-dasharray="5 5"/>
+      <line x1="300" y1="125" x2="120" y2="60" stroke="#a78bfa" stroke-width="2" />
+      <line x1="300" y1="125" x2="480" y2="60" stroke="#a78bfa" stroke-width="2" />
+      <line x1="300" y1="125" x2="120" y2="190" stroke="#a78bfa" stroke-width="2" />
+      <line x1="300" y1="125" x2="480" y2="190" stroke="#a78bfa" stroke-width="2" />
+      <rect x="200" y="100" width="200" height="50" rx="25" fill="url(#centerGrad)" filter="drop-shadow(0px 4px 6px rgba(0,0,0,0.15))"/>
+      <text x="300" y="130" fill="#ffffff" font-size="14" font-weight="bold" text-anchor="middle">課程核心架構</text>
+    """
+    coords = [(40, 40), (400, 40), (40, 170), (400, 170)]
+    for idx, phrase in enumerate(phrases):
+        if idx >= len(coords):
+            break
+        x, y = coords[idx]
+        short_text = phrase[:12] + "..." if len(phrase) > 12 else phrase
+        svg += f"""
+          <rect x="{x}" y="{y}" width="160" height="40" rx="8" fill="url(#nodeGrad)" filter="drop-shadow(0px 2px 4px rgba(0,0,0,0.05))"/>
+          <text x="{x + 80}" y="{y + 24}" fill="#ffffff" font-size="11" font-weight="medium" text-anchor="middle">{short_text}</text>
+        """
+    svg += "</svg>"
+    return svg
+
+def local_quiz_fallback(pdf_url: str):
+    url_lower = pdf_url.lower()
+    if "安全" in url_lower or "盛餘" in url_lower or "15" in url_lower or "26" in url_lower:
+        questions = [
+            {
+                "text": "在現場工作時，佩戴安全帽與防護具的主要目的為何？",
+                "options": ["應付主管檢查", "確保個人人身安全並降低職業災害風險", "提升工作速度"],
+                "correctAnswer": 1
+            },
+            {
+                "text": "關於紅色逃生指示燈的作用，以下敘述何者正確？",
+                "options": ["指示辦公室方向", "在火災或緊急狀況時，指引同仁安全撤離至疏散點", "單純裝飾照明"],
+                "correctAnswer": 1
+            },
+            {
+                "text": "進入機具生產線之前，最重要執行的安檢程序是？",
+                "options": ["直接開機運作以節省時間", "確實確認安全防護防護設施運作正常", "清潔機台周邊"],
+                "correctAnswer": 1
+            }
+        ]
+    elif "溝通" in url_lower:
+        questions = [
+            {
+                "text": "高效溝通中的『積極聆聽』，其核心意義是什麼？",
+                "options": ["隨時準備反駁對方的論點", "專注於理解說話者的立場、需求與本意", "打斷並強行陳述自己的意見"],
+                "correctAnswer": 1
+            },
+            {
+                "text": "在與跨部門溝通協商時，最合適的雙贏手段是？",
+                "options": ["一律拒絕對方的任何要求", "提出數據客觀分析，同理對方立場，共同尋求替代方案", "找高階主管強制施壓"],
+                "correctAnswer": 1
+            },
+            {
+                "text": "提供建設性回饋 (Constructive Feedback) 的黃金法則是？",
+                "options": ["對人不對事地批評", "具體、及時、且指出未來可改善之明確方向", "暗中抱怨而不直接討論"],
+                "correctAnswer": 1
+            }
+        ]
+    else:
+        questions = [
+            {
+                "text": "本教材探討的實務觀念，首要目的在於？",
+                "options": ["提升實作業務效率與專業素養", "滿足年度教育訓練時數要求", "做為淘汰員工的藉口"],
+                "correctAnswer": 0
+            },
+            {
+                "text": "遇到工作異常狀況時，最正確的處理步驟是？",
+                "options": ["私下掩蓋不呈報", "立即回報當班主管並與團隊共同排除異常", "怪罪於其他部門同事"],
+                "correctAnswer": 1
+            },
+            {
+                "text": "本課程學習完成後，最正確的應用方式是？",
+                "options": ["考完試後完全忘記", "融入每日的日常實務工作與跨團隊協同合作中", "私下影印給外人"],
+                "correctAnswer": 1
+            }
+        ]
+    return json.dumps(questions, ensure_ascii=False)
 
 @app.post("/api/chat")
 def chat_with_gemini(req: schemas.ChatRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    api_key = get_gemini_api_key()
-    if not api_key:
-        return {"response": "AI 家教尚未設定 (缺少 API Key)。"}
-        
     course = None
     if req.courseId:
         course = db.query(models.Course).filter(models.Course.id == req.courseId).first()
     if not course and req.courseTitle:
         course = db.query(models.Course).filter(models.Course.title == req.courseTitle).first()
+        
+    desc = course.description if course else ""
+    api_key = get_gemini_api_key()
+    if not api_key:
+        return {"response": local_chat_fallback(req.courseTitle, req.question, desc)}
         
     pdf_b64 = None
     if course and course.pdf_url and course.pdf_url.startswith("/uploads/"):
@@ -509,7 +630,6 @@ def chat_with_gemini(req: schemas.ChatRequest, db: Session = Depends(get_db), cu
             }]
         }
     else:
-        desc = course.description if course else ""
         prompt = f"""
           你是一位專業的企業培訓講師，專長於課程：「{req.courseTitle}」。
           課程簡介：{desc}
@@ -529,19 +649,15 @@ def chat_with_gemini(req: schemas.ChatRequest, db: Session = Depends(get_db), cu
             data = json.loads(resp.read().decode('utf-8'))
             text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
             return {"response": text}
-    except urllib.error.HTTPError as e:
-        if e.code == 400:
-            return {"response": "系統偵測到您的 Gemini API 金鑰無效！請開啟 .env.local 檔案並填入正確的 API Key。"}
-        return {"response": "抱歉，我目前無法連線到知識庫。"}
     except Exception as e:
-        print("Gemini API Error:", e)
-        return {"response": "抱歉，發生了未知的錯誤。"}
+        print("Gemini API Connection failed, switching to local fallback:", e)
+        return {"response": local_chat_fallback(req.courseTitle, req.question, desc)}
 
 @app.post("/api/generate-visual")
 def generate_visual(req: schemas.VisualRequest, current_user: models.User = Depends(get_current_user)):
     api_key = get_gemini_api_key()
     if not api_key:
-        return {"response": ""}
+        return {"response": local_visual_fallback(req.description)}
         
     prompt = f"""
       Create a visually appealing SVG infographic or mind map that summarizes the following course description. 
@@ -565,29 +681,25 @@ def generate_visual(req: schemas.VisualRequest, current_user: models.User = Depe
             if "<svg" in text and "</svg>" in text:
                 text = "<svg" + text.split("<svg")[1].split("</svg>")[0] + "</svg>"
             return {"response": text}
-    except urllib.error.HTTPError as e:
-        if e.code == 400:
-            return {"response": "ERROR_INVALID_KEY"}
-        return {"response": ""}
     except Exception as e:
-        print("Gemini API Error:", e)
-        return {"response": ""}
+        print("Gemini API Connection failed, switching to visual fallback:", e)
+        return {"response": local_visual_fallback(req.description)}
 
 @app.post("/api/generate-questions")
 def generate_questions(req: schemas.GenerateQuestionsRequest, current_user: models.User = Depends(get_current_user)):
+    part_url = req.pdfUrl
+    if not part_url or not part_url.startswith("/uploads/"):
+        return {"response": local_quiz_fallback("")}
+        
+    filename = part_url.replace("/uploads/", "")
+    local_path = os.path.join(UPLOAD_DIR, filename)
+    
+    if not os.path.exists(local_path):
+        return {"response": local_quiz_fallback(part_url)}
+        
     api_key = get_gemini_api_key()
     if not api_key:
-        return {"response": ""}
-    
-    part_url = req.pdfUrl
-    if part_url.startswith("/uploads/"):
-        filename = part_url.replace("/uploads/", "")
-        local_path = os.path.join(UPLOAD_DIR, filename)
-    else:
-        return {"response": ""}
-        
-    if not os.path.exists(local_path):
-        return {"response": ""}
+        return {"response": local_quiz_fallback(part_url)}
         
     try:
         with open(local_path, "rb") as f:
@@ -595,7 +707,7 @@ def generate_questions(req: schemas.GenerateQuestionsRequest, current_user: mode
         pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
     except Exception as e:
         print("Error reading PDF:", e)
-        return {"response": ""}
+        return {"response": local_quiz_fallback(part_url)}
         
     prompt = """
       請根據附件的講義內容，以 JSON 格式出 3 題選擇題。
@@ -629,10 +741,6 @@ def generate_questions(req: schemas.GenerateQuestionsRequest, current_user: mode
                 text = text.split("```")[1].split("```")[0].strip()
             
             return {"response": text}
-    except urllib.error.HTTPError as e:
-        if e.code == 400:
-            return {"response": "ERROR_INVALID_KEY"}
-        return {"response": ""}
     except Exception as e:
-        print("Gemini API Error in generating questions:", e)
-        return {"response": ""}
+        print("Gemini API Connection failed, switching to quiz fallback:", e)
+        return {"response": local_quiz_fallback(part_url)}

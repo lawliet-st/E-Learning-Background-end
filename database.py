@@ -10,7 +10,9 @@ class Base(DeclarativeBase):
     pass
 
 
-DB_FILE = Path(__file__).resolve().parent / "app.db"
+DB_DIR = Path(__file__).resolve().parent / "db"
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_FILE = DB_DIR / "app.db"
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_FILE}"
 
 engine = create_engine(
