@@ -23,17 +23,8 @@ from . import models, schemas, auth
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 僅建立資料表結構（若尚未存在），資料全部來自 dev.db.sysco
     Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    try:
-        if not db.query(models.User).first():
-            print("Database is empty. Auto-seeding default data...")
-            from .seed import seed_data
-            seed_data()
-    except Exception as e:
-        print("Auto-seeding check failed:", e)
-    finally:
-        db.close()
     yield
 
 

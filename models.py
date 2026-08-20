@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional, Any
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, JSON
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from .database import Base
 
@@ -11,8 +11,8 @@ from .database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(String(50), primary_key=True, index=True) # Using UUID or frontend string ID
-    employee_id: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False) # 員工編號 (帳號)
+    id: Mapped[str] = mapped_column(String(50), primary_key=True, index=True) # 使用員工編號 EMPID 作為主鍵
+    employee_id: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False) # 員工編號
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False) # 身分證字號雜湊 (密碼)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -22,7 +22,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(50), default="employee", nullable=False)
     avatar: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     
-    # Store complex TalentProfileData as JSON to avoid excessive table mapping
+    # 人才九宮格、能力評估與履歷 Profile JSON
     profile: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     learning_records: Mapped[List["LearningRecord"]] = relationship(
