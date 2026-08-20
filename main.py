@@ -186,6 +186,11 @@ def get_courses(db: Session = Depends(get_db), current_user: models.User = Depen
             "description": c.description,
             "category": c.category,
             "type": c.type,
+            "status": c.status or "published",
+            "passScore": c.pass_score if c.pass_score is not None else 70,
+            "isRandom10": c.is_random_10 if c.is_random_10 is not None else True,
+            "isRandomOrder": c.is_random_order if c.is_random_order is not None else False,
+            "isRandomOptions": c.is_random_options if c.is_random_options is not None else True,
             "createdAt": c.created_at,
             "thumbnail": c.thumbnail,
             "videoUrl": c.video_url,
@@ -195,7 +200,8 @@ def get_courses(db: Session = Depends(get_db), current_user: models.User = Depen
             "visualSummary": c.visual_summary,
             "attributes": c.attributes,
             "questions": c.questions,
-            "compulsoryTargets": c.compulsory_targets
+            "compulsoryTargets": c.compulsory_targets,
+            "publishHistory": c.publish_history or []
         })
     return res
 
@@ -208,13 +214,28 @@ def create_course(course_data: dict = Body(...), db: Session = Depends(get_db), 
     if existing:
         raise HTTPException(status_code=400, detail="課程已存在")
         
+    status_val = course_data.get("status", "published")
+    history = course_data.get("publishHistory") or []
+    from datetime import datetime
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    history.append({
+        "status": status_val,
+        "timestamp": now_str,
+        "operator": current_user.name
+    })
+
     course = models.Course(
         id=course_data.get("id"),
         title=course_data.get("title", ""),
         description=course_data.get("description", ""),
         category=course_data.get("category", ""),
         type=course_data.get("type", "elective"),
-        created_at=course_data.get("createdAt", ""),
+        status=status_val,
+        pass_score=course_data.get("passScore", 70),
+        is_random_10=course_data.get("isRandom10", True),
+        is_random_order=course_data.get("isRandomOrder", False),
+        is_random_options=course_data.get("isRandomOptions", True),
+        created_at=course_data.get("createdAt", now_str.split(' ')[0]),
         thumbnail=course_data.get("thumbnail", ""),
         video_url=course_data.get("videoUrl", ""),
         pdf_url=course_data.get("pdfUrl", ""),
@@ -223,9 +244,24 @@ def create_course(course_data: dict = Body(...), db: Session = Depends(get_db), 
         visual_summary=course_data.get("visualSummary", ""),
         attributes=course_data.get("attributes"),
         questions=course_data.get("questions"),
-        compulsory_targets=course_data.get("compulsoryTargets")
+        compulsory_targets=course_data.get("compulsoryTargets"),
+        publish_history=history
     )
     db.add(course)
+
+    # If published, auto-create announcement
+    if status_val == "published":
+        ann = models.Announcement(
+            title=f"📢 【新課上架】{course.category}領域《{course.title}》已正式開課！",
+            content=f"由內部講師精心規劃之《{course.title}》現已開放修習！歡迎同仁踴躍點閱學習並參與測驗評量。",
+            type="course_auto",
+            course_id=course.id,
+            created_at=now_str[:16],
+            is_pinned=False,
+            author="人資部"
+        )
+        db.add(ann)
+
     db.commit()
     db.refresh(course)
     return course
@@ -239,10 +275,33 @@ def update_course(course_id: str, course_data: dict = Body(...), db: Session = D
     if not course:
         raise HTTPException(status_code=404, detail="找不到課程")
         
+    from datetime import datetime
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    old_status = course.status
+    new_status = course_data.get("status", course.status or "published")
+
+    history = course.publish_history or []
+    if old_status != new_status:
+        history.append({
+            "status": new_status,
+            "timestamp": now_str,
+            "operator": current_user.name
+        })
+        course.publish_history = history
+
     course.title = course_data.get("title", course.title)
     course.description = course_data.get("description", course.description)
     course.category = course_data.get("category", course.category)
     course.type = course_data.get("type", course.type)
+    course.status = new_status
+    if "passScore" in course_data:
+        course.pass_score = course_data["passScore"]
+    if "isRandom10" in course_data:
+        course.is_random_10 = course_data["isRandom10"]
+    if "isRandomOrder" in course_data:
+        course.is_random_order = course_data["isRandomOrder"]
+    if "isRandomOptions" in course_data:
+        course.is_random_options = course_data["isRandomOptions"]
     course.thumbnail = course_data.get("thumbnail", course.thumbnail)
     course.video_url = course_data.get("videoUrl", course.video_url)
     course.pdf_url = course_data.get("pdfUrl", course.pdf_url)
@@ -253,9 +312,68 @@ def update_course(course_id: str, course_data: dict = Body(...), db: Session = D
     course.questions = course_data.get("questions", course.questions)
     course.compulsory_targets = course_data.get("compulsoryTargets", course.compulsory_targets)
     
+    # Auto announcement if changed from draft/closed to published
+    if old_status != "published" and new_status == "published":
+        ann = models.Announcement(
+            title=f"📢 【新課上架】{course.category}領域《{course.title}》已正式開課！",
+            content=f"由內部講師精心規劃之《{course.title}》現已開放修習！歡迎同仁踴躍點閱學習並參與測驗評量。",
+            type="course_auto",
+            course_id=course.id,
+            created_at=now_str[:16],
+            is_pinned=False,
+            author="人資部"
+        )
+        db.add(ann)
+
     db.commit()
     db.refresh(course)
     return course
+
+@app.post("/api/courses/{course_id}/duplicate")
+def duplicate_course(course_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+        
+    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="找不到課程")
+        
+    from datetime import datetime
+    import time
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    new_id = f"c_{int(time.time() * 1000)}"
+
+    dup_course = models.Course(
+        id=new_id,
+        title=f"{course.title} (副本)",
+        description=course.description,
+        category=course.category,
+        type=course.type,
+        status="draft", # default to draft for copies
+        pass_score=course.pass_score,
+        is_random_10=course.is_random_10,
+        is_random_order=course.is_random_order,
+        is_random_options=course.is_random_options,
+        created_at=now_str.split(' ')[0],
+        thumbnail=course.thumbnail,
+        video_url=course.video_url,
+        pdf_url=course.pdf_url,
+        duration=course.duration,
+        duration_seconds=course.duration_seconds,
+        visual_summary=course.visual_summary,
+        attributes=course.attributes,
+        questions=course.questions,
+        compulsory_targets=course.compulsory_targets,
+        publish_history=[{
+            "status": "draft",
+            "timestamp": now_str,
+            "operator": current_user.name
+        }]
+    )
+    db.add(dup_course)
+    db.commit()
+    db.refresh(dup_course)
+    return dup_course
 
 @app.delete("/api/courses/{course_id}")
 def delete_course(course_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -269,6 +387,153 @@ def delete_course(course_id: str, db: Session = Depends(get_db), current_user: m
     db.delete(course)
     db.commit()
     return {"status": "ok"}
+
+# --- Categories API ---
+@app.get("/api/categories")
+def get_categories(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    cats = db.query(models.Category).order_by(models.Category.id.asc()).all()
+    if not cats:
+        # Auto seed default categories if none
+        defaults = ["職安衛", "軟實力", "IT技能", "管理", "行銷", "品質管理", "生產製造"]
+        for d in defaults:
+            c = models.Category(name=d, created_at="2024-01-01")
+            db.add(c)
+        db.commit()
+        cats = db.query(models.Category).order_by(models.Category.id.asc()).all()
+    return [{"id": c.id, "name": c.name, "createdAt": c.created_at} for c in cats]
+
+@app.post("/api/categories")
+def create_category(cat_data: schemas.CategoryCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    existing = db.query(models.Category).filter(models.Category.name == cat_data.name.strip()).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="分類名稱已存在")
+    from datetime import datetime
+    new_cat = models.Category(name=cat_data.name.strip(), created_at=datetime.now().strftime('%Y-%m-%d'))
+    db.add(new_cat)
+    db.commit()
+    db.refresh(new_cat)
+    return {"id": new_cat.id, "name": new_cat.name, "createdAt": new_cat.created_at}
+
+@app.put("/api/categories/{category_id}")
+def update_category(category_id: int, cat_data: schemas.CategoryUpdate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    cat = db.query(models.Category).filter(models.Category.id == category_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="找不到分類")
+    old_name = cat.name
+    cat.name = cat_data.name.strip()
+    # Also update courses with old category name to new category name
+    courses = db.query(models.Course).filter(models.Course.category == old_name).all()
+    for c in courses:
+        c.category = cat.name
+    db.commit()
+    db.refresh(cat)
+    return {"id": cat.id, "name": cat.name, "createdAt": cat.created_at}
+
+@app.delete("/api/categories/{category_id}")
+def delete_category(category_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    cat = db.query(models.Category).filter(models.Category.id == category_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="找不到分類")
+    db.delete(cat)
+    db.commit()
+    return {"status": "ok"}
+
+# --- Announcements API ---
+@app.get("/api/announcements")
+def get_announcements(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    anns = db.query(models.Announcement).order_by(models.Announcement.is_pinned.desc(), models.Announcement.id.desc()).all()
+    return [{
+        "id": a.id,
+        "title": a.title,
+        "content": a.content,
+        "type": a.type,
+        "imageUrl": a.image_url,
+        "courseId": a.course_id,
+        "createdAt": a.created_at,
+        "isPinned": a.is_pinned,
+        "author": a.author
+    } for a in anns]
+
+@app.post("/api/announcements")
+def create_announcement(data: schemas.AnnouncementCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    from datetime import datetime
+    ann = models.Announcement(
+        title=data.title,
+        content=data.content,
+        type=data.type or "notice",
+        image_url=data.image_url,
+        course_id=data.course_id,
+        created_at=datetime.now().strftime('%Y-%m-%d %H:%M'),
+        is_pinned=bool(data.is_pinned),
+        author=current_user.name
+    )
+    db.add(ann)
+    db.commit()
+    db.refresh(ann)
+    return {
+        "id": ann.id,
+        "title": ann.title,
+        "content": ann.content,
+        "type": ann.type,
+        "imageUrl": ann.image_url,
+        "courseId": ann.course_id,
+        "createdAt": ann.created_at,
+        "isPinned": ann.is_pinned,
+        "author": ann.author
+    }
+
+@app.put("/api/announcements/{ann_id}")
+def update_announcement(ann_id: int, data: schemas.AnnouncementUpdate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    ann = db.query(models.Announcement).filter(models.Announcement.id == ann_id).first()
+    if not ann:
+        raise HTTPException(status_code=404, detail="找不到公告")
+    if data.title is not None:
+        ann.title = data.title
+    if data.content is not None:
+        ann.content = data.content
+    if data.type is not None:
+        ann.type = data.type
+    if data.image_url is not None:
+        ann.image_url = data.image_url
+    if data.course_id is not None:
+        ann.course_id = data.course_id
+    if data.is_pinned is not None:
+        ann.is_pinned = data.is_pinned
+    db.commit()
+    db.refresh(ann)
+    return {
+        "id": ann.id,
+        "title": ann.title,
+        "content": ann.content,
+        "type": ann.type,
+        "imageUrl": ann.image_url,
+        "courseId": ann.course_id,
+        "createdAt": ann.created_at,
+        "isPinned": ann.is_pinned,
+        "author": ann.author
+    }
+
+@app.delete("/api/announcements/{ann_id}")
+def delete_announcement(ann_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="權限不足")
+    ann = db.query(models.Announcement).filter(models.Announcement.id == ann_id).first()
+    if not ann:
+        raise HTTPException(status_code=404, detail="找不到公告")
+    db.delete(ann)
+    db.commit()
+    return {"status": "ok"}
+
 
 @app.post("/api/users")
 def create_user(user_data: dict = Body(...), db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -425,6 +690,17 @@ def sync_users(users_list: List[dict] = Body(...), db: Session = Depends(get_db)
     db.commit()
     return {"status": "ok", "synced": synced_count}
 
+@app.post("/api/users/sync-mssql")
+def trigger_mssql_sync(current_user: models.User = Depends(get_current_user)):
+    if current_user.role not in ["admin", "hr", "manager"]:
+        raise HTTPException(status_code=403, detail="僅管理人員可執行資料庫同步")
+    try:
+        from backend.sync_mssql import sync_users_from_mssql
+        synced_count = sync_users_from_mssql()
+        return {"status": "ok", "message": f"成功從 dev.db.sysco 同步 {synced_count} 筆員工資料"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MS SQL 同步失敗: {str(e)}")
+
 @app.get("/api/progress")
 def get_all_progress(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     records = db.query(models.LearningRecord).all()
@@ -436,13 +712,16 @@ def get_all_progress(db: Session = Depends(get_db), current_user: models.User = 
             "completed": r.completed,
             "quizScore": r.quiz_score,
             "satisfaction": r.satisfaction,
-            "attemptDate": r.attempt_date
+            "attemptDate": r.attempt_date,
+            "failCount": r.fail_count or 0,
+            "lastAttemptTime": r.last_attempt_time or r.attempt_date
         })
     return res
 
 @app.post("/api/progress")
 def update_progress(req: schemas.CourseProgressUpdate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     from datetime import datetime
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     record = db.query(models.LearningRecord).filter_by(user_id=current_user.id, course_id=req.course_id).first()
     if not record:
         record = models.LearningRecord(
@@ -451,7 +730,9 @@ def update_progress(req: schemas.CourseProgressUpdate, db: Session = Depends(get
             completed=req.completed,
             quiz_score=req.quiz_score,
             satisfaction=req.satisfaction,
-            attempt_date=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            attempt_date=now_str,
+            fail_count=req.fail_count or 0,
+            last_attempt_time=req.last_attempt_time or now_str
         )
         db.add(record)
     else:
@@ -460,9 +741,14 @@ def update_progress(req: schemas.CourseProgressUpdate, db: Session = Depends(get
              record.quiz_score = req.quiz_score
         if req.satisfaction is not None:
              record.satisfaction = req.satisfaction
-        record.attempt_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if req.fail_count is not None:
+             record.fail_count = req.fail_count
+        if req.last_attempt_time is not None:
+             record.last_attempt_time = req.last_attempt_time
+        record.attempt_date = now_str
     db.commit()
     return {"status": "ok"}
+
 
 @app.post("/api/upload")
 def upload_file(req: schemas.UploadRequest, current_user: models.User = Depends(get_current_user)):

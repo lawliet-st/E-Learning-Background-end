@@ -15,6 +15,8 @@ class CourseProgressUpdate(BaseModel):
     completed: bool
     quiz_score: Optional[int] = None
     satisfaction: Optional[int] = None
+    fail_count: Optional[int] = None
+    last_attempt_time: Optional[str] = None
 
 class UploadRequest(BaseModel):
     filename: str
@@ -30,3 +32,25 @@ class VisualRequest(BaseModel):
 
 class GenerateQuestionsRequest(BaseModel):
     pdfUrl: str
+
+class AnnouncementCreate(BaseModel):
+    title: str
+    content: str
+    type: Optional[str] = "notice"
+    image_url: Optional[str] = None
+    course_id: Optional[str] = None
+    is_pinned: Optional[bool] = False
+
+class AnnouncementUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    type: Optional[str] = None
+    image_url: Optional[str] = None
+    course_id: Optional[str] = None
+    is_pinned: Optional[bool] = None
+
+class CategoryCreate(BaseModel):
+    name: str
+
+class CategoryUpdate(BaseModel):
+    name: str
