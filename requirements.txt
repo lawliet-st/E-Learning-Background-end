@@ -3,3 +3,5 @@ uvicorn[standard]
 SQLAlchemy
 passlib[bcrypt]
 PyJWT
+pymssql
+pyodbc
