@@ -103,7 +103,7 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
     conn_str = mssql_connection_string or DEFAULT_MSSQL_CONN_STR
     logging.info(f"Starting MS SQL synchronization using string: {conn_str.split('@')[-1] if '@' in conn_str else conn_str}")
     
-    mssql_engine = create_engine(conn_str)
+    mssql_engine = create_engine(conn_str, connect_args={"charset": "cp950"})
     db: Session = SessionLocal()
     
     try:

@@ -24,8 +24,9 @@ def create_app_engine():
     url = SQLALCHEMY_DATABASE_URL
     logging.info(f"Strictly Connecting to MS SQL Server dev.db.sysco: {url.split('@')[-1] if '@' in url else url}")
     
-    # 建立 MS SQL Server (pymssql) 引擎
-    mssql_engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=20)
+    # 建立 MS SQL Server (pymssql) 引擎，指定 charset=cp950 解決繁體中文亂碼
+    connect_args = {"charset": "cp950"}
+    mssql_engine = create_engine(url, connect_args=connect_args, pool_pre_ping=True, pool_size=10, max_overflow=20)
     
     # 測試連線
     with mssql_engine.connect() as conn:
