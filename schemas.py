@@ -38,16 +38,33 @@ class AnnouncementCreate(BaseModel):
     content: str
     type: Optional[str] = "notice"
     image_url: Optional[str] = None
+    imageUrl: Optional[str] = None
     course_id: Optional[str] = None
+    courseId: Optional[str] = None
     is_pinned: Optional[bool] = False
+    isPinned: Optional[bool] = False
+
+    def get_image_url() -> Optional[str]:
+        return self.image_url or self.imageUrl
+
+    def get_course_id() -> Optional[str]:
+        return self.course_id or self.courseId
+
+    def get_is_pinned() -> bool:
+        if self.is_pinned is not None:
+            return bool(self.is_pinned)
+        return bool(self.isPinned)
 
 class AnnouncementUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     type: Optional[str] = None
     image_url: Optional[str] = None
+    imageUrl: Optional[str] = None
     course_id: Optional[str] = None
+    courseId: Optional[str] = None
     is_pinned: Optional[bool] = None
+    isPinned: Optional[bool] = None
 
 class CategoryCreate(BaseModel):
     name: str

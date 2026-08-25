@@ -465,14 +465,18 @@ def create_announcement(data: schemas.AnnouncementCreate, db: Session = Depends(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="權限不足")
     from datetime import datetime
+    img_url = data.image_url if data.image_url is not None else data.imageUrl
+    c_id = data.course_id if data.course_id is not None else data.courseId
+    pinned = data.is_pinned if data.is_pinned is not None else data.isPinned
+
     ann = models.Announcement(
         title=data.title,
         content=data.content,
         type=data.type or "notice",
-        image_url=data.image_url,
-        course_id=data.course_id,
+        image_url=img_url,
+        course_id=c_id,
         created_at=datetime.now().strftime('%Y-%m-%d %H:%M'),
-        is_pinned=bool(data.is_pinned),
+        is_pinned=bool(pinned),
         author=current_user.name
     )
     db.add(ann)
@@ -503,12 +507,19 @@ def update_announcement(ann_id: int, data: schemas.AnnouncementUpdate, db: Sessi
         ann.content = data.content
     if data.type is not None:
         ann.type = data.type
-    if data.image_url is not None:
-        ann.image_url = data.image_url
-    if data.course_id is not None:
-        ann.course_id = data.course_id
-    if data.is_pinned is not None:
-        ann.is_pinned = data.is_pinned
+    
+    img_url = data.image_url if data.image_url is not None else data.imageUrl
+    if img_url is not None:
+        ann.image_url = img_url
+        
+    c_id = data.course_id if data.course_id is not None else data.courseId
+    if c_id is not None:
+        ann.course_id = c_id
+        
+    pinned = data.is_pinned if data.is_pinned is not None else data.isPinned
+    if pinned is not None:
+        ann.is_pinned = bool(pinned)
+        
     db.commit()
     db.refresh(ann)
     return {
