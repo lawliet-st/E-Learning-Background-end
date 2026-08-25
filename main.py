@@ -174,82 +174,96 @@ def get_users(db: Session = Depends(get_db), current_user: models.User = Depends
         })
     return res
 
+def format_course_dict(c: models.Course) -> dict:
+    return {
+        "id": c.id,
+        "title": c.title or "",
+        "description": c.description or "",
+        "category": c.category or "",
+        "type": c.type or "elective",
+        "status": c.status or "published",
+        "passScore": c.pass_score if c.pass_score is not None else 70,
+        "pass_score": c.pass_score if c.pass_score is not None else 70,
+        "isRandom10": c.is_random_10 if c.is_random_10 is not None else True,
+        "is_random_10": c.is_random_10 if c.is_random_10 is not None else True,
+        "isRandomOrder": c.is_random_order if c.is_random_order is not None else False,
+        "is_random_order": c.is_random_order if c.is_random_order is not None else False,
+        "isRandomOptions": c.is_random_options if c.is_random_options is not None else True,
+        "is_random_options": c.is_random_options if c.is_random_options is not None else True,
+        "createdAt": c.created_at or "",
+        "created_at": c.created_at or "",
+        "thumbnail": c.thumbnail or "",
+        "videoUrl": c.video_url or "",
+        "video_url": c.video_url or "",
+        "pdfUrl": c.pdf_url or "",
+        "pdf_url": c.pdf_url or "",
+        "duration": c.duration or "",
+        "durationSeconds": c.duration_seconds if c.duration_seconds is not None else 3600,
+        "duration_seconds": c.duration_seconds if c.duration_seconds is not None else 3600,
+        "visualSummary": c.visual_summary or "",
+        "visual_summary": c.visual_summary or "",
+        "attributes": c.attributes or {},
+        "questions": c.questions or [],
+        "compulsoryTargets": c.compulsory_targets or {"departments": [], "userIds": []},
+        "compulsory_targets": c.compulsory_targets or {"departments": [], "userIds": []},
+        "publishHistory": c.publish_history or [],
+        "publish_history": c.publish_history or []
+    }
+
 @app.get("/api/courses")
 def get_courses(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     courses = db.query(models.Course).all()
-    # Map model to frontend keys
-    res = []
-    for c in courses:
-        res.append({
-            "id": c.id,
-            "title": c.title,
-            "description": c.description,
-            "category": c.category,
-            "type": c.type,
-            "status": c.status or "published",
-            "passScore": c.pass_score if c.pass_score is not None else 70,
-            "isRandom10": c.is_random_10 if c.is_random_10 is not None else True,
-            "isRandomOrder": c.is_random_order if c.is_random_order is not None else False,
-            "isRandomOptions": c.is_random_options if c.is_random_options is not None else True,
-            "createdAt": c.created_at,
-            "thumbnail": c.thumbnail,
-            "videoUrl": c.video_url,
-            "pdfUrl": c.pdf_url,
-            "duration": c.duration,
-            "durationSeconds": c.duration_seconds,
-            "visualSummary": c.visual_summary,
-            "attributes": c.attributes,
-            "questions": c.questions,
-            "compulsoryTargets": c.compulsory_targets,
-            "publishHistory": c.publish_history or []
-        })
-    return res
+    return [format_course_dict(c) for c in courses]
 
 @app.post("/api/courses")
 def create_course(course_data: dict = Body(...), db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="權限不足")
-    
-    existing = db.query(models.Course).filter(models.Course.id == course_data.get("id")).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="課程已存在")
-        
-    status_val = course_data.get("status", "published")
-    history = course_data.get("publishHistory") or []
+
     from datetime import datetime
+    import time
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    history.append({
-        "status": status_val,
-        "timestamp": now_str,
-        "operator": current_user.name
-    })
+
+    c_id = course_data.get("id") or f"c_{int(time.time() * 1000)}"
+    status_val = course_data.get("status", "published")
+
+    history = course_data.get("publishHistory") or course_data.get("publish_history") or []
+    if not history:
+        history = [{
+            "status": status_val,
+            "timestamp": now_str,
+            "operator": current_user.name
+        }]
+
+    v_url = course_data.get("videoUrl") if course_data.get("videoUrl") is not None else course_data.get("video_url", "")
+    p_url = course_data.get("pdfUrl") if course_data.get("pdfUrl") is not None else course_data.get("pdf_url", "")
+    comp_targets = course_data.get("compulsoryTargets") if course_data.get("compulsoryTargets") is not None else course_data.get("compulsory_targets")
 
     course = models.Course(
-        id=course_data.get("id"),
-        title=course_data.get("title", ""),
+        id=c_id,
+        title=course_data.get("title", "未命名課程"),
         description=course_data.get("description", ""),
-        category=course_data.get("category", ""),
+        category=course_data.get("category", "通用"),
         type=course_data.get("type", "elective"),
         status=status_val,
-        pass_score=course_data.get("passScore", 70),
-        is_random_10=course_data.get("isRandom10", True),
-        is_random_order=course_data.get("isRandomOrder", False),
-        is_random_options=course_data.get("isRandomOptions", True),
-        created_at=course_data.get("createdAt", now_str.split(' ')[0]),
+        pass_score=course_data.get("passScore") if course_data.get("passScore") is not None else course_data.get("pass_score", 70),
+        is_random_10=course_data.get("isRandom10") if course_data.get("isRandom10") is not None else course_data.get("is_random_10", True),
+        is_random_order=course_data.get("isRandomOrder") if course_data.get("isRandomOrder") is not None else course_data.get("is_random_order", False),
+        is_random_options=course_data.get("isRandomOptions") if course_data.get("isRandomOptions") is not None else course_data.get("is_random_options", True),
+        created_at=now_str[:10],
         thumbnail=course_data.get("thumbnail", ""),
-        video_url=course_data.get("videoUrl", ""),
-        pdf_url=course_data.get("pdfUrl", ""),
+        video_url=v_url or "",
+        pdf_url=p_url or "",
         duration=course_data.get("duration", "60 分鐘"),
-        duration_seconds=course_data.get("durationSeconds", 3600),
-        visual_summary=course_data.get("visualSummary", ""),
+        duration_seconds=course_data.get("durationSeconds") if course_data.get("durationSeconds") is not None else course_data.get("duration_seconds", 3600),
+        visual_summary=course_data.get("visualSummary") or course_data.get("visual_summary", ""),
         attributes=course_data.get("attributes"),
         questions=course_data.get("questions"),
-        compulsory_targets=course_data.get("compulsoryTargets"),
+        compulsory_targets=comp_targets,
         publish_history=history
     )
     db.add(course)
 
-    # If published, auto-create announcement
     if status_val == "published":
         ann = models.Announcement(
             title=f"📢 【新課上架】{course.category}領域《{course.title}》已正式開課！",
@@ -264,7 +278,7 @@ def create_course(course_data: dict = Body(...), db: Session = Depends(get_db), 
 
     db.commit()
     db.refresh(course)
-    return course
+    return format_course_dict(course)
 
 @app.put("/api/courses/{course_id}")
 def update_course(course_id: str, course_data: dict = Body(...), db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -294,23 +308,61 @@ def update_course(course_id: str, course_data: dict = Body(...), db: Session = D
     course.category = course_data.get("category", course.category)
     course.type = course_data.get("type", course.type)
     course.status = new_status
+    
     if "passScore" in course_data:
         course.pass_score = course_data["passScore"]
+    elif "pass_score" in course_data:
+        course.pass_score = course_data["pass_score"]
+
     if "isRandom10" in course_data:
         course.is_random_10 = course_data["isRandom10"]
+    elif "is_random_10" in course_data:
+        course.is_random_10 = course_data["is_random_10"]
+
     if "isRandomOrder" in course_data:
         course.is_random_order = course_data["isRandomOrder"]
+    elif "is_random_order" in course_data:
+        course.is_random_order = course_data["is_random_order"]
+
     if "isRandomOptions" in course_data:
         course.is_random_options = course_data["isRandomOptions"]
+    elif "is_random_options" in course_data:
+        course.is_random_options = course_data["is_random_options"]
+
     course.thumbnail = course_data.get("thumbnail", course.thumbnail)
-    course.video_url = course_data.get("videoUrl", course.video_url)
-    course.pdf_url = course_data.get("pdfUrl", course.pdf_url)
+
+    if "videoUrl" in course_data:
+        course.video_url = course_data["videoUrl"]
+    elif "video_url" in course_data:
+        course.video_url = course_data["video_url"]
+
+    if "pdfUrl" in course_data:
+        course.pdf_url = course_data["pdfUrl"]
+    elif "pdf_url" in course_data:
+        course.pdf_url = course_data["pdf_url"]
+
     course.duration = course_data.get("duration", course.duration)
-    course.duration_seconds = course_data.get("durationSeconds", course.duration_seconds)
-    course.visual_summary = course_data.get("visualSummary", course.visual_summary)
-    course.attributes = course_data.get("attributes", course.attributes)
-    course.questions = course_data.get("questions", course.questions)
-    course.compulsory_targets = course_data.get("compulsoryTargets", course.compulsory_targets)
+    
+    if "durationSeconds" in course_data:
+        course.duration_seconds = course_data["durationSeconds"]
+    elif "duration_seconds" in course_data:
+        course.duration_seconds = course_data["duration_seconds"]
+
+    if "visualSummary" in course_data:
+        course.visual_summary = course_data["visualSummary"]
+    elif "visual_summary" in course_data:
+        course.visual_summary = course_data["visual_summary"]
+
+    if "attributes" in course_data:
+        course.attributes = course_data["attributes"]
+
+    if "questions" in course_data:
+        course.questions = course_data["questions"]
+
+    if "compulsoryTargets" in course_data:
+        course.compulsory_targets = course_data["compulsoryTargets"]
+    elif "compulsory_targets" in course_data:
+        course.compulsory_targets = course_data["compulsory_targets"]
     
     # Auto announcement if changed from draft/closed to published
     if old_status != "published" and new_status == "published":
@@ -327,7 +379,7 @@ def update_course(course_id: str, course_data: dict = Body(...), db: Session = D
 
     db.commit()
     db.refresh(course)
-    return course
+    return format_course_dict(course)
 
 @app.post("/api/courses/{course_id}/duplicate")
 def duplicate_course(course_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -373,7 +425,7 @@ def duplicate_course(course_id: str, db: Session = Depends(get_db), current_user
     db.add(dup_course)
     db.commit()
     db.refresh(dup_course)
-    return dup_course
+    return format_course_dict(dup_course)
 
 @app.delete("/api/courses/{course_id}")
 def delete_course(course_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
