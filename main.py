@@ -158,10 +158,19 @@ def get_users(db: Session = Depends(get_db), current_user: models.User = Depends
     # Mask passwords
     res = []
     for u in users:
+        prof = u.profile or {}
         res.append({
-            "id": u.id, "name": u.name, "employee_id": u.employee_id,
-            "department": u.department, "title": u.title, "role": u.role,
-            "profile": u.profile, "avatar": u.avatar, "internalEmail": u.internal_email
+            "id": u.id,
+            "employeeId": u.employee_id,
+            "employee_id": u.employee_id,
+            "name": u.name,
+            "email": u.email or u.internal_email or "",
+            "internalEmail": u.internal_email,
+            "department": u.department or "",
+            "title": u.title or "",
+            "role": u.role,
+            "profile": prof,
+            "avatar": u.avatar or ""
         })
     return res
 
