@@ -108,7 +108,65 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/api/login", response_model=schemas.Token)
+def build_user_profile_dict(u: models.User) -> dict:
+    prof_obj = u.user_profile
+    skills_obj = u.user_skills
+    perf_obj = u.performance_history
+    
+    return {
+        "age": prof_obj.age if prof_obj and prof_obj.age is not None else 30,
+        "joinDate": prof_obj.join_date if prof_obj and prof_obj.join_date else "2023-01-01",
+        "nineBoxPosition": {
+            "performance": prof_obj.nine_box_perf if prof_obj and prof_obj.nine_box_perf else "High",
+            "potential": prof_obj.nine_box_pot if prof_obj and prof_obj.nine_box_pot else "High"
+        },
+        "assessment": {
+            "hpi": prof_obj.hpi_score if prof_obj and prof_obj.hpi_score is not None else 0,
+            "hds": prof_obj.hds_score if prof_obj and prof_obj.hds_score is not None else 0,
+            "mvpi": prof_obj.mvpi_score if prof_obj and prof_obj.mvpi_score is not None else 0,
+            "completed": prof_obj.assessment_completed if prof_obj else False
+        },
+        "skillAssessmentScore": prof_obj.skill_assessment_score if prof_obj and prof_obj.skill_assessment_score is not None else 0,
+        "skills": [{"subject": s.subject, "A": s.score, "fullMark": s.full_mark} for s in skills_obj],
+        "performanceHistory": [{"year": p.year, "rating": p.rating} for p in perf_obj]
+    }
+
+def save_user_profile_subtables(db: Session, user_id: str, prof_data: dict):
+    if not prof_data or not isinstance(prof_data, dict):
+        return
+    u_prof = db.query(models.UserProfile).filter(models.UserProfile.user_id == user_id).first()
+    if not u_prof:
+        u_prof = models.UserProfile(user_id=user_id)
+        db.add(u_prof)
+    
+    u_prof.age = prof_data.get("age", u_prof.age or 30)
+    u_prof.join_date = prof_data.get("joinDate", u_prof.join_date or "2023-01-01")
+    
+    ninebox = prof_data.get("nineBoxPosition") or {}
+    u_prof.nine_box_perf = ninebox.get("performance", u_prof.nine_box_perf or "High")
+    u_prof.nine_box_pot = ninebox.get("potential", u_prof.nine_box_pot or "High")
+
+    assess = prof_data.get("assessment") or {}
+    u_prof.hpi_score = assess.get("hpi", u_prof.hpi_score or 0)
+    u_prof.hds_score = assess.get("hds", u_prof.hds_score or 0)
+    u_prof.mvpi_score = assess.get("mvpi", u_prof.mvpi_score or 0)
+    u_prof.assessment_completed = bool(assess.get("completed", u_prof.assessment_completed))
+    u_prof.skill_assessment_score = prof_data.get("skillAssessmentScore", u_prof.skill_assessment_score or 0)
+
+    skills = prof_data.get("skills")
+    if skills is not None and isinstance(skills, list):
+        db.query(models.UserSkill).filter(models.UserSkill.user_id == user_id).delete()
+        for s in skills:
+            db.add(models.UserSkill(user_id=user_id, subject=s.get("subject", ""), score=s.get("A", 0), full_mark=s.get("fullMark", 100)))
+
+    perf_hist = prof_data.get("performanceHistory")
+    if perf_hist is not None and isinstance(perf_hist, list):
+        db.query(models.UserPerformanceHistory).filter(models.UserPerformanceHistory.user_id == user_id).delete()
+        for p in perf_hist:
+            db.add(models.UserPerformanceHistory(user_id=user_id, year=str(p.get("year", "")), rating=float(p.get("rating", 0))))
+
+@app.post("/api/token")
+@app.post("/api/login")
 def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.employee_id == req.employee_id).first()
     if not user:
@@ -119,7 +177,6 @@ def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     access_token = auth.create_access_token(data={"sub": user.employee_id, "role": user.role})
     
-    # Dump user safely to dict
     user_dict = {
         "id": user.id,
         "name": user.name,
@@ -129,11 +186,10 @@ def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
         "avatar": user.avatar,
         "department": user.department,
         "title": user.title,
-        "profile": user.profile
+        "profile": build_user_profile_dict(user)
     }
     
     return {"access_token": access_token, "token_type": "bearer", "user": user_dict}
-
 
 from fastapi.security import OAuth2PasswordBearer
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
@@ -701,17 +757,21 @@ def create_user(user_data: dict = Body(...), db: Session = Depends(get_db), curr
         department=user_data.get("department", ""),
         title=user_data.get("title", ""),
         avatar=user_data.get("avatar", "https://picsum.photos/seed/newuser/100/100"),
-        hashed_password=auth.get_password_hash(emp_id),
-        profile=user_data.get("profile")
+        hashed_password=auth.get_password_hash(emp_id)
     )
     db.add(user)
+    db.flush()
+    
+    if "profile" in user_data:
+        save_user_profile_subtables(db, user.id, user_data["profile"])
+
     db.commit()
     db.refresh(user)
     
     return {
         "id": user.id, "name": user.name, "employee_id": user.employee_id,
         "department": user.department, "title": user.title, "role": user.role,
-        "profile": user.profile, "avatar": user.avatar, "internalEmail": user.internal_email,
+        "profile": build_user_profile_dict(user), "avatar": user.avatar, "internalEmail": user.internal_email,
         "email": user.email
     }
 
@@ -738,7 +798,7 @@ def update_user(user_id: str, user_data: dict = Body(...), db: Session = Depends
     user.avatar = user_data.get("avatar", user.avatar)
     
     if "profile" in user_data:
-        user.profile = user_data["profile"]
+        save_user_profile_subtables(db, user.id, user_data["profile"])
         
     db.commit()
     db.refresh(user)
@@ -746,7 +806,7 @@ def update_user(user_id: str, user_data: dict = Body(...), db: Session = Depends
     return {
         "id": user.id, "name": user.name, "employee_id": user.employee_id,
         "department": user.department, "title": user.title, "role": user.role,
-        "profile": user.profile, "avatar": user.avatar, "internalEmail": user.internal_email,
+        "profile": build_user_profile_dict(user), "avatar": user.avatar, "internalEmail": user.internal_email,
         "email": user.email
     }
 
@@ -795,12 +855,7 @@ def sync_users(users_list: List[dict] = Body(...), db: Session = Depends(get_db)
                 user.title = title
                 user.email = email
                 user.internal_email = int_email
-                if user.profile is None:
-                    user.profile = {
-                        "age": 30, "joinDate": "2026-01-01", "performanceHistory": [], "skills": [],
-                        "nineBoxPosition": {"performance": "Medium", "potential": "Medium"},
-                        "assessment": {"hpi": 0, "hds": 0, "mvpi": 0, "completed": False}, "tags": [], "skillAssessmentScore": 0
-                    }
+                save_user_profile_subtables(db, user.id, u_item.get("profile") or {})
                 synced_count += 1
         else:
             if status_val not in ["inactive", "terminated"]:
@@ -815,19 +870,11 @@ def sync_users(users_list: List[dict] = Body(...), db: Session = Depends(get_db)
                     department=dept,
                     title=title,
                     avatar=f"https://api.dicebear.com/7.x/initials/svg?seed={name}",
-                    hashed_password=auth.get_password_hash(emp_id),
-                    profile={
-                        "age": 30,
-                        "joinDate": "2026-01-01",
-                        "performanceHistory": [],
-                        "skills": [],
-                        "nineBoxPosition": {"performance": "Medium", "potential": "Medium"},
-                        "assessment": {"hpi": 0, "hds": 0, "mvpi": 0, "completed": False},
-                        "tags": [],
-                        "skillAssessmentScore": 0
-                    }
+                    hashed_password=auth.get_password_hash(emp_id)
                 )
                 db.add(user)
+                db.flush()
+                save_user_profile_subtables(db, user.id, u_item.get("profile") or {})
                 synced_count += 1
                 
     db.commit()
