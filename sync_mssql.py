@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
-from backend.models import User
+from backend.models import User, UserProfile, UserPerformanceHistory
 from backend.auth import get_password_hash
 
 logging.basicConfig(level=logging.INFO)
@@ -143,39 +143,13 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                 existing_user = db.query(User).filter(User.employee_id == emp_id).first()
                 perf_history = parse_performance_history(row_dict)
                 
-                if existing_user:
-                    # 更新基本資訊
-                    if name:
-                        existing_user.name = name
-                    if email:
-                        existing_user.email = email
-                    if dept:
-                        existing_user.department = dept
-                    if title:
-                        existing_user.title = title
-                    
-                    # 更新 profile JSON
-                    current_profile = existing_user.profile or {}
-                    if join_date:
-                        current_profile["joinDate"] = join_date
-                    if cpny_id:
-                        current_profile["cpnyId"] = cpny_id
-                    if perf_history:
-                        current_profile["performanceHistory"] = perf_history
-                    existing_user.profile = current_profile
-                    
-                    # 若已離職可變更角色
-                    if not is_active:
-                        logging.info(f"User {emp_id} is inactive, setting role to inactive")
-                        existing_user.role = "inactive"
-                else:
-                    # 新增同仁帳號
+                target_user = existing_user
+                if not target_user:
                     if not is_active:
                         continue # 離職人員不新增
                         
                     hashed_pwd = get_password_hash(national_id) if national_id else get_password_hash("123456")
-                    
-                    new_user = User(
+                    target_user = User(
                         id=f"usr_{emp_id}",
                         employee_id=emp_id,
                         hashed_password=hashed_pwd,
@@ -183,23 +157,39 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                         email=email or f"{emp_id}@shengyusteel.com",
                         department=dept or "未分配部門",
                         title=title or "同仁",
-                        role="employee",
-                        profile={
-                            "age": 30,
-                            "cpnyId": cpny_id,
-                            "joinDate": join_date,
-                            "performanceHistory": perf_history,
-                            "skills": [],
-                            "nineBoxPosition": {"performance": "Medium", "potential": "Medium"},
-                            "assessment": {"hpi": 0, "hds": 0, "mvpi": 0, "completed": False},
-                            "tags": []
-                        }
+                        role="employee"
                     )
-                    db.add(new_user)
+                    db.add(target_user)
+                    db.flush()
+                else:
+                    if name: target_user.name = name
+                    if email: target_user.email = email
+                    if dept: target_user.department = dept
+                    if title: target_user.title = title
+                    if not is_active: target_user.role = "inactive"
+
+                # Update UserProfile sub-table
+                u_prof = db.query(UserProfile).filter(UserProfile.user_id == target_user.id).first()
+                if not u_prof:
+                    u_prof = UserProfile(user_id=target_user.id, age=30, nine_box_perf="Medium", nine_box_pot="Medium")
+                    db.add(u_prof)
+                if join_date:
+                    u_prof.join_date = join_date
+
+                # Update UserPerformanceHistory sub-table
+                if perf_history:
+                    db.query(UserPerformanceHistory).filter(UserPerformanceHistory.user_id == target_user.id).delete()
+                    for ph in perf_history:
+                        db.add(UserPerformanceHistory(
+                            user_id=target_user.id,
+                            year=str(ph.get("year", "")),
+                            rating=float(ph.get("rating", 0))
+                        ))
+
                 synced_count += 1
             
             db.commit()
-            logging.info(f"Successfully synced {synced_count} employee records from MS SQL.")
+            logging.info(f"Successfully synced {synced_count} employee records from MS SQL to relational sub-tables.")
             return synced_count
     except Exception as e:
         db.rollback()

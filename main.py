@@ -44,13 +44,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@app.get("/uploads/{filename}")
-def serve_upload(filename: str, request: Request):
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(file_path):
+@app.get("/uploads/{subpath:path}")
+def serve_upload(subpath: str, request: Request):
+    file_path = os.path.normpath(os.path.join(UPLOAD_DIR, subpath))
+    if not file_path.startswith(UPLOAD_DIR) or not os.path.exists(file_path) or os.path.isdir(file_path):
         raise HTTPException(status_code=404, detail="檔案不存在")
         
-    mime_type = "video/mp4" if filename.endswith(".mp4") else "video/webm" if filename.endswith(".webm") else None
+    mime_type = "video/mp4" if subpath.endswith(".mp4") else "video/webm" if subpath.endswith(".webm") else None
     range_header = request.headers.get("range")
     
     if mime_type and range_header:
@@ -71,7 +71,7 @@ def serve_upload(filename: str, request: Request):
                 f.seek(start)
                 bytes_left = chunk_size
                 while bytes_left > 0:
-                    chunk = f.read(min(bytes_left, 1024 * 64)) # 64KB chunks
+                    chunk = f.read(min(bytes_left, 1024 * 64))
                     if not chunk:
                         break
                     bytes_left -= len(chunk)
@@ -153,12 +153,31 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 @app.get("/api/users")
 def get_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    # Everyone might need to see everyone for metrics? Or admin only.
     users = db.query(models.User).all()
-    # Mask passwords
     res = []
     for u in users:
-        prof = u.profile or {}
+        prof_obj = u.user_profile
+        skills_obj = u.user_skills
+        perf_obj = u.performance_history
+        
+        prof_dict = {
+            "age": prof_obj.age if prof_obj and prof_obj.age is not None else 30,
+            "joinDate": prof_obj.join_date if prof_obj and prof_obj.join_date else "2023-01-01",
+            "nineBoxPosition": {
+                "performance": prof_obj.nine_box_perf if prof_obj and prof_obj.nine_box_perf else "High",
+                "potential": prof_obj.nine_box_pot if prof_obj and prof_obj.nine_box_pot else "High"
+            },
+            "assessment": {
+                "hpi": prof_obj.hpi_score if prof_obj and prof_obj.hpi_score is not None else 0,
+                "hds": prof_obj.hds_score if prof_obj and prof_obj.hds_score is not None else 0,
+                "mvpi": prof_obj.mvpi_score if prof_obj and prof_obj.mvpi_score is not None else 0,
+                "completed": prof_obj.assessment_completed if prof_obj else False
+            },
+            "skillAssessmentScore": prof_obj.skill_assessment_score if prof_obj and prof_obj.skill_assessment_score is not None else 0,
+            "skills": [{"subject": s.subject, "A": s.score, "fullMark": s.full_mark} for s in skills_obj],
+            "performanceHistory": [{"year": p.year, "rating": p.rating} for p in perf_obj]
+        }
+        
         res.append({
             "id": u.id,
             "employeeId": u.employee_id,
@@ -169,12 +188,46 @@ def get_users(db: Session = Depends(get_db), current_user: models.User = Depends
             "department": u.department or "",
             "title": u.title or "",
             "role": u.role,
-            "profile": prof,
+            "profile": prof_dict,
             "avatar": u.avatar or ""
         })
     return res
 
 def format_course_dict(c: models.Course) -> dict:
+    attrs = c.course_attribute
+    attrs_dict = {
+        "logic": attrs.logic if attrs else 50,
+        "professional": attrs.professional if attrs else 50,
+        "difficulty": attrs.difficulty if attrs else 50,
+        "importance": attrs.importance if attrs else 50,
+        "knowledgeLimit": attrs.knowledge_limit if attrs else 50
+    }
+    
+    questions_list = []
+    for q in c.course_questions:
+        opts = [o.option_text for o in q.options]
+        questions_list.append({
+            "id": q.question_id,
+            "text": q.text,
+            "options": opts,
+            "correctAnswer": q.correct_answer
+        })
+
+    depts = [t.target_value for t in c.compulsory_targets_rel if t.target_type == "department"]
+    uids = [t.target_value for t in c.compulsory_targets_rel if t.target_type == "user"]
+    comp_targets_dict = {
+        "departments": depts,
+        "userIds": uids
+    }
+
+    pub_hist_list = []
+    for p in c.publish_history_rel:
+        pub_hist_list.append({
+            "action": p.action,
+            "timestamp": p.timestamp,
+            "operator": p.operator
+        })
+
     return {
         "id": c.id,
         "title": c.title or "",
@@ -202,13 +255,68 @@ def format_course_dict(c: models.Course) -> dict:
         "duration_seconds": c.duration_seconds if c.duration_seconds is not None else 3600,
         "visualSummary": c.visual_summary or "",
         "visual_summary": c.visual_summary or "",
-        "attributes": c.attributes or {},
-        "questions": c.questions or [],
-        "compulsoryTargets": c.compulsory_targets or {"departments": [], "userIds": []},
-        "compulsory_targets": c.compulsory_targets or {"departments": [], "userIds": []},
-        "publishHistory": c.publish_history or [],
-        "publish_history": c.publish_history or []
+        "attributes": attrs_dict,
+        "questions": questions_list,
+        "compulsoryTargets": comp_targets_dict,
+        "compulsory_targets": comp_targets_dict,
+        "publishHistory": pub_hist_list,
+        "publish_history": pub_hist_list
     }
+
+def save_course_relational_data(db: Session, course_id: str, course_data: dict, current_user_name: str, new_status: str, old_status: str = None):
+    attrs = course_data.get("attributes")
+    if attrs and isinstance(attrs, dict):
+        c_attr = db.query(models.CourseAttribute).filter(models.CourseAttribute.course_id == course_id).first()
+        if not c_attr:
+            c_attr = models.CourseAttribute(course_id=course_id)
+            db.add(c_attr)
+        c_attr.logic = attrs.get("logic", 50)
+        c_attr.professional = attrs.get("professional", 50)
+        c_attr.difficulty = attrs.get("difficulty", 50)
+        c_attr.importance = attrs.get("importance", 50)
+        c_attr.knowledge_limit = attrs.get("knowledgeLimit", 50)
+
+    questions = course_data.get("questions")
+    if questions is not None and isinstance(questions, list):
+        db.query(models.CourseQuestion).filter(models.CourseQuestion.course_id == course_id).delete()
+        for q in questions:
+            q_obj = models.CourseQuestion(
+                course_id=course_id,
+                question_id=q.get("id", "q1"),
+                text=q.get("text", ""),
+                correct_answer=q.get("correctAnswer", 0)
+            )
+            db.add(q_obj)
+            db.flush()
+            
+            opts = q.get("options", [])
+            for idx, opt_text in enumerate(opts):
+                opt_obj = models.CourseQuestionOption(
+                    question_db_id=q_obj.id,
+                    option_order=idx,
+                    option_text=opt_text
+                )
+                db.add(opt_obj)
+
+    comp_targets = course_data.get("compulsoryTargets") if course_data.get("compulsoryTargets") is not None else course_data.get("compulsory_targets")
+    if comp_targets is not None and isinstance(comp_targets, dict):
+        db.query(models.CourseCompulsoryTarget).filter(models.CourseCompulsoryTarget.course_id == course_id).delete()
+        depts = comp_targets.get("departments", [])
+        uids = comp_targets.get("userIds", [])
+        for d in depts:
+            db.add(models.CourseCompulsoryTarget(course_id=course_id, target_type="department", target_value=d))
+        for u in uids:
+            db.add(models.CourseCompulsoryTarget(course_id=course_id, target_type="user", target_value=u))
+
+    from datetime import datetime
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    if old_status is not None and old_status != new_status:
+        db.add(models.CoursePublishHistory(
+            course_id=course_id,
+            action=new_status,
+            timestamp=now_str,
+            operator=current_user_name
+        ))
 
 @app.get("/api/courses")
 def get_courses(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -227,17 +335,8 @@ def create_course(course_data: dict = Body(...), db: Session = Depends(get_db), 
     c_id = course_data.get("id") or f"c_{int(time.time() * 1000)}"
     status_val = course_data.get("status", "published")
 
-    history = course_data.get("publishHistory") or course_data.get("publish_history") or []
-    if not history:
-        history = [{
-            "status": status_val,
-            "timestamp": now_str,
-            "operator": current_user.name
-        }]
-
     v_url = course_data.get("videoUrl") if course_data.get("videoUrl") is not None else course_data.get("video_url", "")
     p_url = course_data.get("pdfUrl") if course_data.get("pdfUrl") is not None else course_data.get("pdf_url", "")
-    comp_targets = course_data.get("compulsoryTargets") if course_data.get("compulsoryTargets") is not None else course_data.get("compulsory_targets")
 
     course = models.Course(
         id=c_id,
@@ -256,13 +355,12 @@ def create_course(course_data: dict = Body(...), db: Session = Depends(get_db), 
         pdf_url=p_url or "",
         duration=course_data.get("duration", "60 分鐘"),
         duration_seconds=course_data.get("durationSeconds") if course_data.get("durationSeconds") is not None else course_data.get("duration_seconds", 3600),
-        visual_summary=course_data.get("visualSummary") or course_data.get("visual_summary", ""),
-        attributes=course_data.get("attributes"),
-        questions=course_data.get("questions"),
-        compulsory_targets=comp_targets,
-        publish_history=history
+        visual_summary=course_data.get("visualSummary") or course_data.get("visual_summary", "")
     )
     db.add(course)
+    db.flush()
+
+    save_course_relational_data(db, c_id, course_data, current_user.name, status_val)
 
     if status_val == "published":
         ann = models.Announcement(
@@ -293,15 +391,6 @@ def update_course(course_id: str, course_data: dict = Body(...), db: Session = D
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     old_status = course.status
     new_status = course_data.get("status", course.status or "published")
-
-    history = course.publish_history or []
-    if old_status != new_status:
-        history.append({
-            "status": new_status,
-            "timestamp": now_str,
-            "operator": current_user.name
-        })
-        course.publish_history = history
 
     course.title = course_data.get("title", course.title)
     course.description = course_data.get("description", course.description)
@@ -353,16 +442,7 @@ def update_course(course_id: str, course_data: dict = Body(...), db: Session = D
     elif "visual_summary" in course_data:
         course.visual_summary = course_data["visual_summary"]
 
-    if "attributes" in course_data:
-        course.attributes = course_data["attributes"]
-
-    if "questions" in course_data:
-        course.questions = course_data["questions"]
-
-    if "compulsoryTargets" in course_data:
-        course.compulsory_targets = course_data["compulsoryTargets"]
-    elif "compulsory_targets" in course_data:
-        course.compulsory_targets = course_data["compulsory_targets"]
+    save_course_relational_data(db, course_id, course_data, current_user.name, new_status, old_status)
     
     # Auto announcement if changed from draft/closed to published
     if old_status != "published" and new_status == "published":
@@ -815,15 +895,29 @@ def update_progress(req: schemas.CourseProgressUpdate, db: Session = Depends(get
 
 @app.post("/api/upload")
 def upload_file(req: schemas.UploadRequest, current_user: models.User = Depends(get_current_user)):
-    # To avoid python-multipart, we accept base64 payload.
     file_b64 = req.fileB64
     if file_b64.startswith("data:"):
         file_b64 = file_b64.split(",")[1]
     file_bytes = base64.b64decode(file_b64)
-    file_path = os.path.join(UPLOAD_DIR, req.filename)
+
+    fname_lower = req.filename.lower()
+    if fname_lower.endswith((".mp4", ".mkv", ".avi", ".mov", ".webm")):
+        sub_folder = "videos"
+    elif fname_lower.endswith((".pdf", ".doc", ".docx", ".ppt", ".pptx")):
+        sub_folder = "documents"
+    elif fname_lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")):
+        sub_folder = "images"
+    else:
+        sub_folder = ""
+
+    target_dir = os.path.join(UPLOAD_DIR, sub_folder) if sub_folder else UPLOAD_DIR
+    os.makedirs(target_dir, exist_ok=True)
+    file_path = os.path.join(target_dir, req.filename)
     with open(file_path, "wb") as f:
         f.write(file_bytes)
-    return {"url": f"/uploads/{req.filename}"}
+
+    rel_url = f"/uploads/{sub_folder}/{req.filename}" if sub_folder else f"/uploads/{req.filename}"
+    return {"url": rel_url}
 def local_chat_fallback(course_title: str, question: str, course_desc: str = ""):
     q_lower = question.lower()
     if "安全" in q_lower or "危害" in q_lower or "防護" in q_lower or "佩戴" in q_lower:
