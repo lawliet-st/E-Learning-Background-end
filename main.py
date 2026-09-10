@@ -168,24 +168,33 @@ def save_user_profile_subtables(db: Session, user_id: str, prof_data: dict):
 @app.post("/api/token")
 @app.post("/api/login")
 def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.employee_id == req.employee_id).first()
+    user = db.query(models.User).filter(models.User.EMPID == req.employee_id).first()
     if not user:
         raise HTTPException(status_code=401, detail="無效的員工編號或密碼")
     
-    if not auth.verify_password(req.password, user.hashed_password):
+    # 密碼驗證：直接比對 IDNO (身分證字號)，或比對 hashed_password (管理員自訂密碼)
+    pwd_input = req.password.strip()
+    is_valid = False
+    
+    if user.IDNO and pwd_input.upper() == user.IDNO.strip().upper():
+        is_valid = True
+    elif user.hashed_password and auth.verify_password(pwd_input, user.hashed_password):
+        is_valid = True
+
+    if not is_valid:
         raise HTTPException(status_code=401, detail="無效的員工編號或密碼")
 
-    access_token = auth.create_access_token(data={"sub": user.employee_id, "role": user.role})
+    access_token = auth.create_access_token(data={"sub": user.EMPID, "role": user.role})
     
     user_dict = {
-        "id": user.id,
-        "name": user.name,
-        "employee_id": user.employee_id,
-        "email": user.email,
+        "id": user.EMPID,
+        "name": user.HECNAME,
+        "employee_id": user.EMPID,
+        "email": user.EMAIL or "",
         "role": user.role,
         "avatar": user.avatar,
-        "department": user.department,
-        "title": user.title,
+        "department": user.DEPT_NO or "",
+        "title": user.TITLE or "",
         "profile": build_user_profile_dict(user)
     }
     
@@ -201,48 +210,26 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     employee_id = payload.get("sub")
     if employee_id is None:
         raise HTTPException(status_code=401, detail="無效的認證")
-    user = db.query(models.User).filter(models.User.employee_id == employee_id).first()
+    user = db.query(models.User).filter(models.User.EMPID == employee_id).first()
     if user is None:
         raise HTTPException(status_code=401, detail="使用者不存在")
     return user
-
 
 @app.get("/api/users")
 def get_users(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     users = db.query(models.User).all()
     res = []
     for u in users:
-        prof_obj = u.user_profile
-        skills_obj = u.user_skills
-        perf_obj = u.performance_history
-        
-        prof_dict = {
-            "age": prof_obj.age if prof_obj and prof_obj.age is not None else 30,
-            "joinDate": prof_obj.join_date if prof_obj and prof_obj.join_date else "2023-01-01",
-            "nineBoxPosition": {
-                "performance": prof_obj.nine_box_perf if prof_obj and prof_obj.nine_box_perf else "High",
-                "potential": prof_obj.nine_box_pot if prof_obj and prof_obj.nine_box_pot else "High"
-            },
-            "assessment": {
-                "hpi": prof_obj.hpi_score if prof_obj and prof_obj.hpi_score is not None else 0,
-                "hds": prof_obj.hds_score if prof_obj and prof_obj.hds_score is not None else 0,
-                "mvpi": prof_obj.mvpi_score if prof_obj and prof_obj.mvpi_score is not None else 0,
-                "completed": prof_obj.assessment_completed if prof_obj else False
-            },
-            "skillAssessmentScore": prof_obj.skill_assessment_score if prof_obj and prof_obj.skill_assessment_score is not None else 0,
-            "skills": [{"subject": s.subject, "A": s.score, "fullMark": s.full_mark} for s in skills_obj],
-            "performanceHistory": [{"year": p.year, "rating": p.rating} for p in perf_obj]
-        }
-        
+        prof_dict = build_user_profile_dict(u)
         res.append({
-            "id": u.id,
-            "employeeId": u.employee_id,
-            "employee_id": u.employee_id,
-            "name": u.name,
-            "email": u.email or u.internal_email or "",
+            "id": u.EMPID,
+            "employeeId": u.EMPID,
+            "employee_id": u.EMPID,
+            "name": u.HECNAME,
+            "email": u.EMAIL or u.internal_email or "",
             "internalEmail": u.internal_email,
-            "department": u.department or "",
-            "title": u.title or "",
+            "department": u.DEPT_NO or "",
+            "title": u.TITLE or "",
             "role": u.role,
             "profile": prof_dict,
             "avatar": u.avatar or ""
@@ -748,39 +735,39 @@ def create_user(user_data: dict = Body(...), db: Session = Depends(get_db), curr
         raise HTTPException(status_code=400, detail="員工編號已存在")
         
     user = models.User(
-        id=user_data.get("id"),
-        employee_id=emp_id,
-        name=user_data.get("name", ""),
-        email=user_data.get("email", ""),
+        EMPID=emp_id,
+        HECNAME=user_data.get("name", ""),
+        EMAIL=user_data.get("email", ""),
         internal_email=user_data.get("internalEmail", user_data.get("internal_email")),
         role=user_data.get("role", "employee"),
-        department=user_data.get("department", ""),
-        title=user_data.get("title", ""),
-        avatar=user_data.get("avatar", "https://picsum.photos/seed/newuser/100/100"),
+        DEPT_NO=user_data.get("department", ""),
+        TITLE=user_data.get("title", ""),
+        avatar=user_data.get("avatar", f"https://api.dicebear.com/7.x/initials/svg?seed={user_data.get('name', '')}"),
+        IDNO=user_data.get("national_id") or user_data.get("idno") or emp_id,
         hashed_password=auth.get_password_hash(emp_id)
     )
     db.add(user)
     db.flush()
     
     if "profile" in user_data:
-        save_user_profile_subtables(db, user.id, user_data["profile"])
+        save_user_profile_subtables(db, user.EMPID, user_data["profile"])
 
     db.commit()
     db.refresh(user)
     
     return {
-        "id": user.id, "name": user.name, "employee_id": user.employee_id,
-        "department": user.department, "title": user.title, "role": user.role,
+        "id": user.EMPID, "name": user.HECNAME, "employee_id": user.EMPID,
+        "department": user.DEPT_NO, "title": user.TITLE, "role": user.role,
         "profile": build_user_profile_dict(user), "avatar": user.avatar, "internalEmail": user.internal_email,
-        "email": user.email
+        "email": user.EMAIL
     }
 
 @app.put("/api/users/{user_id}")
 def update_user(user_id: str, user_data: dict = Body(...), db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    if current_user.role != "admin" and current_user.id != user_id:
+    if current_user.role != "admin" and current_user.EMPID != user_id:
         raise HTTPException(status_code=403, detail="權限不足")
         
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    user = db.query(models.User).filter(models.User.EMPID == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="找不到使用者")
         
@@ -788,26 +775,28 @@ def update_user(user_id: str, user_data: dict = Body(...), db: Session = Depends
         user.role = user_data.get("role", user.role)
         emp_id = user_data.get("employee_id") or user_data.get("employeeId")
         if emp_id:
-            user.employee_id = emp_id
+            user.EMPID = emp_id
             
-    user.name = user_data.get("name", user.name)
-    user.email = user_data.get("email", user.email)
+    user.HECNAME = user_data.get("name", user.HECNAME)
+    user.EMAIL = user_data.get("email", user.EMAIL)
     user.internal_email = user_data.get("internalEmail", user_data.get("internal_email", user.internal_email))
-    user.department = user_data.get("department", user.department)
-    user.title = user_data.get("title", user.title)
+    user.DEPT_NO = user_data.get("department", user.DEPT_NO)
+    user.TITLE = user_data.get("title", user.TITLE)
     user.avatar = user_data.get("avatar", user.avatar)
+    if "idno" in user_data or "national_id" in user_data:
+        user.IDNO = user_data.get("idno") or user_data.get("national_id")
     
     if "profile" in user_data:
-        save_user_profile_subtables(db, user.id, user_data["profile"])
+        save_user_profile_subtables(db, user.EMPID, user_data["profile"])
         
     db.commit()
     db.refresh(user)
     
     return {
-        "id": user.id, "name": user.name, "employee_id": user.employee_id,
-        "department": user.department, "title": user.title, "role": user.role,
+        "id": user.EMPID, "name": user.HECNAME, "employee_id": user.EMPID,
+        "department": user.DEPT_NO, "title": user.TITLE, "role": user.role,
         "profile": build_user_profile_dict(user), "avatar": user.avatar, "internalEmail": user.internal_email,
-        "email": user.email
+        "email": user.EMAIL
     }
 
 @app.delete("/api/users/{user_id}")
@@ -815,7 +804,7 @@ def delete_user(user_id: str, db: Session = Depends(get_db), current_user: model
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="權限不足")
         
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    user = db.query(models.User).filter(models.User.EMPID == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="找不到使用者")
         
@@ -834,47 +823,51 @@ def sync_users(users_list: List[dict] = Body(...), db: Session = Depends(get_db)
         
     synced_count = 0
     for u_item in users_list:
-        emp_id = u_item.get("employee_id")
+        emp_id = u_item.get("employee_id") or u_item.get("EMPID")
         if not emp_id:
             continue
             
-        name = u_item.get("name", "")
-        dept = u_item.get("department", "")
-        title = u_item.get("title", "")
-        email = u_item.get("email", "")
+        name = u_item.get("name") or u_item.get("HECNAME") or ""
+        dept = u_item.get("department") or u_item.get("DEPT_NO") or ""
+        title = u_item.get("title") or u_item.get("TITLE") or ""
+        email = u_item.get("email") or u_item.get("EMAIL") or ""
         int_email = u_item.get("internal_email", "")
-        status_val = u_item.get("status", "active")
+        status_val = u_item.get("status") or u_item.get("STATE") or "在職"
+        idno = u_item.get("idno") or u_item.get("national_id") or u_item.get("IDNO") or emp_id
         
-        user = db.query(models.User).filter(models.User.employee_id == emp_id).first()
+        user = db.query(models.User).filter(models.User.EMPID == emp_id).first()
         if user:
-            if status_val in ["inactive", "terminated"]:
-                db.delete(user)
+            if status_val in ["inactive", "terminated", "離職"]:
+                user.STATE = "離職"
+                user.role = "inactive"
             else:
-                user.name = name
-                user.department = dept
-                user.title = title
-                user.email = email
+                user.HECNAME = name
+                user.DEPT_NO = dept
+                user.TITLE = title
+                user.EMAIL = email
                 user.internal_email = int_email
-                save_user_profile_subtables(db, user.id, u_item.get("profile") or {})
-                synced_count += 1
+                user.IDNO = idno
+                user.STATE = "在職"
+            save_user_profile_subtables(db, user.EMPID, u_item.get("profile") or {})
+            synced_count += 1
         else:
-            if status_val not in ["inactive", "terminated"]:
-                user_id = f"u_sync_{emp_id}"
+            if status_val not in ["inactive", "terminated", "離職"]:
                 user = models.User(
-                    id=user_id,
-                    employee_id=emp_id,
-                    name=name,
-                    email=email,
+                    EMPID=emp_id,
+                    HECNAME=name,
+                    EMAIL=email,
                     internal_email=int_email,
                     role="employee",
-                    department=dept,
-                    title=title,
+                    DEPT_NO=dept,
+                    TITLE=title,
+                    STATE="在職",
+                    IDNO=idno,
                     avatar=f"https://api.dicebear.com/7.x/initials/svg?seed={name}",
                     hashed_password=auth.get_password_hash(emp_id)
                 )
                 db.add(user)
                 db.flush()
-                save_user_profile_subtables(db, user.id, u_item.get("profile") or {})
+                save_user_profile_subtables(db, user.EMPID, u_item.get("profile") or {})
                 synced_count += 1
                 
     db.commit()

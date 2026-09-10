@@ -11,7 +11,7 @@ from .database import Base
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("elearning.EMPID", ondelete="CASCADE"), primary_key=True)
     age: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     join_date: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     nine_box_perf: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
@@ -29,7 +29,7 @@ class UserSkill(Base):
     __tablename__ = "user_skills"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("elearning.EMPID", ondelete="CASCADE"), nullable=False)
     subject: Mapped[str] = mapped_column(Unicode(100), nullable=False)
     score: Mapped[int] = mapped_column(Integer, nullable=False)
     full_mark: Mapped[int] = mapped_column(Integer, default=100)
@@ -41,7 +41,7 @@ class UserPerformanceHistory(Base):
     __tablename__ = "user_performance_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("elearning.EMPID", ondelete="CASCADE"), nullable=False)
     year: Mapped[str] = mapped_column(String(20), nullable=False)
     rating: Mapped[float] = mapped_column(Float, nullable=False)
 
@@ -49,18 +49,46 @@ class UserPerformanceHistory(Base):
 
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__ = "elearning"
 
-    id: Mapped[str] = mapped_column(String(50), primary_key=True, index=True)
-    employee_id: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    name: Mapped[str] = mapped_column(Unicode(100), nullable=False)
-    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    internal_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    department: Mapped[Optional[str]] = mapped_column(Unicode(100), nullable=True)
-    title: Mapped[Optional[str]] = mapped_column(Unicode(100), nullable=True)
-    role: Mapped[str] = mapped_column(String(50), default="employee", nullable=False)
-    avatar: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    EMPID: Mapped[str] = mapped_column("EMPID", String(50), primary_key=True, index=True)
+    HECNAME: Mapped[str] = mapped_column("HECNAME", Unicode(100), nullable=False)
+    IDNO: Mapped[Optional[str]] = mapped_column("IDNO", Unicode(50), nullable=True)
+    DEPT_NO: Mapped[Optional[str]] = mapped_column("DEPT_NO", Unicode(100), nullable=True)
+    TITLE: Mapped[Optional[str]] = mapped_column("TITLE", Unicode(100), nullable=True)
+    STATE: Mapped[Optional[str]] = mapped_column("STATE", Unicode(20), default="在職", nullable=True)
+    EMAIL: Mapped[Optional[str]] = mapped_column("EMAIL", String(255), nullable=True)
+    datein: Mapped[Optional[str]] = mapped_column("datein", String(50), nullable=True)
+    CPNYID: Mapped[Optional[str]] = mapped_column("CPNYID", String(20), default="SYSCO", nullable=True)
+    role: Mapped[str] = mapped_column("role", String(50), default="employee", nullable=False)
+    avatar: Mapped[Optional[str]] = mapped_column("avatar", String(255), nullable=True)
+    internal_email: Mapped[Optional[str]] = mapped_column("internal_email", String(255), nullable=True)
+    hashed_password: Mapped[Optional[str]] = mapped_column("hashed_password", String(255), nullable=True)
+
+    # 相容別名屬性 (Synonyms for Backward Compatibility)
+    @property
+    def id(self) -> str:
+        return self.EMPID
+
+    @property
+    def employee_id(self) -> str:
+        return self.EMPID
+
+    @property
+    def name(self) -> str:
+        return self.HECNAME
+
+    @property
+    def department(self) -> str:
+        return self.DEPT_NO or ""
+
+    @property
+    def title(self) -> str:
+        return self.TITLE or ""
+
+    @property
+    def email(self) -> str:
+        return self.EMAIL or ""
 
     learning_records: Mapped[List["LearningRecord"]] = relationship(
         back_populates="user",
@@ -193,7 +221,7 @@ class LearningRecord(Base):
     __tablename__ = "learning_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("elearning.EMPID"), index=True, nullable=False)
     course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), index=True, nullable=False)
     completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     quiz_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

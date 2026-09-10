@@ -108,14 +108,19 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
     
     try:
         with mssql_engine.connect() as conn:
-            # 優先嘗試 [eLearn].[dbo].[elearning]，若失敗則切換至 [HRM].[dbo].[eLEARNING]
-            try:
-                query = text("SELECT * FROM [dbo].[elearning]")
-                result = conn.execute(query)
-            except Exception as table_err:
-                logging.warning(f"Querying [dbo].[elearning] failed, attempting [HRM].[dbo].[eLEARNING]: {table_err}")
-                query = text("SELECT * FROM [HRM].[dbo].[eLEARNING]")
-                result = conn.execute(query)
+            # 優先嘗試 [HRM].[dbo].[eLEARNING] (HR 正式 View)，次之 [dbo].[elearning]，最後 [dbo].[z_backup_elearning_598]
+            query_success = False
+            for tbl in ["[HRM].[dbo].[eLEARNING]", "[dbo].[elearning]", "[dbo].[z_backup_elearning_598]"]:
+                try:
+                    result = conn.execute(text(f"SELECT * FROM {tbl}"))
+                    logging.info(f"Successfully connected and querying from {tbl}")
+                    query_success = True
+                    break
+                except Exception as table_err:
+                    logging.warning(f"Querying {tbl} not available: {table_err}")
+            
+            if not query_success:
+                raise RuntimeError("No employee source table found in MSSQL")
 
             rows = result.mappings().all()
             
@@ -140,7 +145,7 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                 is_active = status in ["在職", "Active", "1", "Y", ""]
                 
                 # 尋找現有使用者
-                existing_user = db.query(User).filter(User.employee_id == emp_id).first()
+                existing_user = db.query(User).filter(User.EMPID == emp_id).first()
                 perf_history = parse_performance_history(row_dict)
                 
                 target_user = existing_user
@@ -148,40 +153,46 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                     if not is_active:
                         continue # 離職人員不新增
                         
-                    hashed_pwd = get_password_hash(national_id) if national_id else get_password_hash("123456")
                     target_user = User(
-                        id=f"usr_{emp_id}",
-                        employee_id=emp_id,
-                        hashed_password=hashed_pwd,
-                        name=name or f"員工{emp_id}",
-                        email=email or f"{emp_id}@shengyusteel.com",
-                        department=dept or "未分配部門",
-                        title=title or "同仁",
-                        role="employee"
+                        EMPID=emp_id,
+                        HECNAME=name or f"員工{emp_id}",
+                        IDNO=national_id or emp_id,
+                        EMAIL=email or f"{emp_id}@shengyusteel.com",
+                        DEPT_NO=dept or "未分配部門",
+                        TITLE=title or "同仁",
+                        STATE="在職",
+                        role="employee",
+                        datein=join_date,
+                        CPNYID=cpny_id or "SYSCO"
                     )
                     db.add(target_user)
                     db.flush()
                 else:
-                    if name: target_user.name = name
-                    if email: target_user.email = email
-                    if dept: target_user.department = dept
-                    if title: target_user.title = title
-                    if not is_active: target_user.role = "inactive"
+                    if name: target_user.HECNAME = name
+                    if email: target_user.EMAIL = email
+                    if dept: target_user.DEPT_NO = dept
+                    if title: target_user.TITLE = title
+                    if national_id: target_user.IDNO = national_id
+                    if not is_active:
+                        target_user.STATE = "離職"
+                        target_user.role = "inactive"
+                    else:
+                        target_user.STATE = "在職"
 
                 # Update UserProfile sub-table
-                u_prof = db.query(UserProfile).filter(UserProfile.user_id == target_user.id).first()
+                u_prof = db.query(UserProfile).filter(UserProfile.user_id == target_user.EMPID).first()
                 if not u_prof:
-                    u_prof = UserProfile(user_id=target_user.id, age=30, nine_box_perf="Medium", nine_box_pot="Medium")
+                    u_prof = UserProfile(user_id=target_user.EMPID, age=30, nine_box_perf="Medium", nine_box_pot="Medium")
                     db.add(u_prof)
                 if join_date:
                     u_prof.join_date = join_date
 
                 # Update UserPerformanceHistory sub-table
                 if perf_history:
-                    db.query(UserPerformanceHistory).filter(UserPerformanceHistory.user_id == target_user.id).delete()
+                    db.query(UserPerformanceHistory).filter(UserPerformanceHistory.user_id == target_user.EMPID).delete()
                     for ph in perf_history:
                         db.add(UserPerformanceHistory(
-                            user_id=target_user.id,
+                            user_id=target_user.EMPID,
                             year=str(ph.get("year", "")),
                             rating=float(ph.get("rating", 0))
                         ))
