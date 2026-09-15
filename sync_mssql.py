@@ -16,7 +16,7 @@ from typing import Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from backend.database import SessionLocal
+from backend.database import SessionLocal, SQLALCHEMY_DATABASE_URL
 from backend.models import User, UserProfile, UserPerformanceHistory
 from backend.auth import get_password_hash
 
@@ -24,11 +24,8 @@ logging.basicConfig(level=logging.INFO)
 
 from datetime import datetime
 
-# 預設連線字串 (可由環境變數 MSSQL_CONN_STR 覆蓋)
-DEFAULT_MSSQL_CONN_STR = os.getenv(
-    "MSSQL_CONN_STR",
-    "mssql+pymssql://lrnuser:userlrn@dev.db.sysco/eLearn"
-)
+# 預設連線字串 (對齊 database.py 的當前環境配置，可由環境變數 MSSQL_CONN_STR 覆蓋)
+DEFAULT_MSSQL_CONN_STR = os.getenv("MSSQL_CONN_STR", SQLALCHEMY_DATABASE_URL)
 
 def parse_performance_history(row_mapping: dict) -> list[dict]:
     """
