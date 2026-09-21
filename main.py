@@ -11,6 +11,7 @@ import os
 import base64
 import json
 import urllib.request
+import logging
 
 # Bypass potential broken system proxies
 proxy_support = urllib.request.ProxyHandler({})
@@ -1090,6 +1091,93 @@ def upload_file(req: schemas.UploadRequest, current_user: models.User = Depends(
 
     rel_url = f"/uploads/{sub_folder}/{req.filename}" if sub_folder else f"/uploads/{req.filename}"
     return {"url": rel_url}
+
+@app.post("/api/upload/chunk")
+async def upload_chunk(
+    request: Request,
+    current_user: models.User = Depends(get_current_user)
+):
+    """分片上傳端點：接收 5MB 左右的小分片，零記憶體膨脹且穿透 Nginx 限制"""
+    upload_id = request.headers.get("x-upload-id")
+    chunk_index_str = request.headers.get("x-chunk-index")
+    
+    if not upload_id or chunk_index_str is None:
+        raise HTTPException(status_code=400, detail="缺少分片上傳標頭 (x-upload-id 或 x-chunk-index)")
+        
+    try:
+        chunk_index = int(chunk_index_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="無效的 chunk index")
+        
+    clean_upload_id = "".join(c for c in upload_id if c.isalnum() or c in ['_', '-'])
+    temp_dir = os.path.join(UPLOAD_DIR, "_temp", clean_upload_id)
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    chunk_path = os.path.join(temp_dir, f"chunk_{chunk_index}")
+    chunk_bytes = await request.body()
+    
+    if not chunk_bytes:
+        raise HTTPException(status_code=400, detail="分片資料為空")
+        
+    with open(chunk_path, "wb") as f:
+        f.write(chunk_bytes)
+        
+    return {"status": "ok", "chunk_index": chunk_index, "bytes_received": len(chunk_bytes)}
+
+@app.post("/api/upload/merge")
+def merge_chunks(req: schemas.MergeUploadRequest, current_user: models.User = Depends(get_current_user)):
+    """分片合併端點：所有分片上傳完成後循序合併為完整影片/文件，並嚴格校驗檔案完整性"""
+    clean_upload_id = "".join(c for c in req.upload_id if c.isalnum() or c in ['_', '-'])
+    temp_dir = os.path.join(UPLOAD_DIR, "_temp", clean_upload_id)
+    
+    if not os.path.exists(temp_dir):
+        raise HTTPException(status_code=404, detail="分片暫存目錄不存在或已被清理")
+        
+    for i in range(req.total_chunks):
+        c_path = os.path.join(temp_dir, f"chunk_{i}")
+        if not os.path.exists(c_path):
+            raise HTTPException(status_code=400, detail=f"缺少分片 {i}，請重新上傳該分片")
+            
+    fname_lower = req.filename.lower()
+    if fname_lower.endswith((".mp4", ".mkv", ".avi", ".mov", ".webm")):
+        sub_folder = "videos"
+    elif fname_lower.endswith((".pdf", ".doc", ".docx", ".ppt", ".pptx")):
+        sub_folder = "documents"
+    elif fname_lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")):
+        sub_folder = "images"
+    else:
+        sub_folder = ""
+        
+    target_dir = os.path.join(UPLOAD_DIR, sub_folder) if sub_folder else UPLOAD_DIR
+    os.makedirs(target_dir, exist_ok=True)
+    target_file = os.path.join(target_dir, req.filename)
+    
+    with open(target_file, "wb") as out_f:
+        for i in range(req.total_chunks):
+            c_path = os.path.join(temp_dir, f"chunk_{i}")
+            with open(c_path, "rb") as in_f:
+                while True:
+                    buf = in_f.read(1024 * 1024 * 4)
+                    if not buf:
+                        break
+                    out_f.write(buf)
+                    
+    final_size = os.path.getsize(target_file)
+    
+    import shutil
+    try:
+        shutil.rmtree(temp_dir)
+    except Exception as e:
+        logging.warning(f"Failed to clean temp dir {temp_dir}: {e}")
+        
+    if final_size == 0:
+        if os.path.exists(target_file):
+            os.remove(target_file)
+        raise HTTPException(status_code=400, detail="合併後檔案大小為 0 位元組，檔案無效")
+        
+    rel_url = f"/uploads/{sub_folder}/{req.filename}" if sub_folder else f"/uploads/{req.filename}"
+    logging.info(f"[MERGE_SUCCESS] 檔案合併完成: '{target_file}', 大小: {final_size} bytes, URL: {rel_url}")
+    return {"url": rel_url, "size": final_size}
 def local_chat_fallback(course_title: str, question: str, course_desc: str = ""):
     q_lower = question.lower()
     if "安全" in q_lower or "危害" in q_lower or "防護" in q_lower or "佩戴" in q_lower:

@@ -22,6 +22,12 @@ class UploadRequest(BaseModel):
     filename: str
     fileB64: str
 
+class MergeUploadRequest(BaseModel):
+    upload_id: str
+    filename: str
+    total_chunks: int
+    expected_size: Optional[int] = None
+
 class ChatRequest(BaseModel):
     courseTitle: str
     question: str
