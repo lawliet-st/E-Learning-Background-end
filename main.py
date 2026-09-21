@@ -44,47 +44,126 @@ from fastapi.responses import FileResponse, StreamingResponse
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+import urllib.parse
+import unicodedata
+
+def resolve_upload_file(subpath: str) -> Optional[str]:
+    """彈性且安全地解析上傳檔案的本機路徑（支援中文、URL 編碼、全半形括號及空白字元）"""
+    candidates = [
+        subpath,
+        urllib.parse.unquote(subpath),
+        urllib.parse.unquote_plus(subpath),
+    ]
+    
+    # 1. 直接與 URL 解碼比對
+    for cand in candidates:
+        cand_norm = os.path.normpath(os.path.join(UPLOAD_DIR, cand))
+        if cand_norm.startswith(UPLOAD_DIR) and os.path.isfile(cand_norm):
+            return cand_norm
+
+    # 2. Unicode 各種標準正規化 (NFC / NFKC / NFD / NFKD)
+    for cand in list(candidates):
+        for form in ['NFC', 'NFKC', 'NFD', 'NFKD']:
+            norm_cand = unicodedata.normalize(form, cand)
+            cand_norm = os.path.normpath(os.path.join(UPLOAD_DIR, norm_cand))
+            if cand_norm.startswith(UPLOAD_DIR) and os.path.isfile(cand_norm):
+                return cand_norm
+
+    # 3. 容錯：針對目錄內檔案名稱進行微小字元容錯（忽略全半形括號差異、多餘空格等）
+    decoded = urllib.parse.unquote(subpath)
+    clean_subpath = decoded.replace('\\', '/')
+    parts = clean_subpath.split('/')
+    if len(parts) > 1:
+        sub_dir = os.path.join(UPLOAD_DIR, *parts[:-1])
+        target_name = parts[-1]
+    else:
+        sub_dir = UPLOAD_DIR
+        target_name = parts[0]
+
+    if os.path.isdir(sub_dir):
+        def simplify(s: str) -> str:
+            return (unicodedata.normalize('NFKC', s)
+                    .lower()
+                    .replace(' ', '')
+                    .replace('_', '')
+                    .replace('-', '')
+                    .replace('（', '(')
+                    .replace('）', ')')
+                    .replace('[', '(')
+                    .replace(']', ')'))
+
+        simplified_target = simplify(target_name)
+        try:
+            for fname in os.listdir(sub_dir):
+                if simplify(fname) == simplified_target:
+                    found = os.path.join(sub_dir, fname)
+                    if os.path.isfile(found):
+                        return found
+        except Exception:
+            pass
+
+    return None
+
 @app.get("/uploads/{subpath:path}")
 def serve_upload(subpath: str, request: Request):
-    file_path = os.path.normpath(os.path.join(UPLOAD_DIR, subpath))
-    if not file_path.startswith(UPLOAD_DIR) or not os.path.exists(file_path) or os.path.isdir(file_path):
+    file_path = resolve_upload_file(subpath)
+    if not file_path:
         raise HTTPException(status_code=404, detail="檔案不存在")
         
-    mime_type = "video/mp4" if subpath.endswith(".mp4") else "video/webm" if subpath.endswith(".webm") else None
+    lower_path = file_path.lower()
+    if lower_path.endswith(".mp4"):
+        mime_type = "video/mp4"
+    elif lower_path.endswith(".webm"):
+        mime_type = "video/webm"
+    elif lower_path.endswith(".pdf"):
+        mime_type = "application/pdf"
+    elif lower_path.endswith((".png", ".jpg", ".jpeg", ".webp")):
+        ext = lower_path.split('.')[-1]
+        mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+    else:
+        mime_type = None
+
     range_header = request.headers.get("range")
-    
-    if mime_type and range_header:
-        file_size = os.path.getsize(file_path)
-        start, end = 0, file_size - 1
-        range_str = range_header.replace("bytes=", "")
-        parts = range_str.split("-")
-        if parts[0]:
-            start = int(parts[0])
-        if len(parts) > 1 and parts[1]:
-            end = int(parts[1])
+    file_size = os.path.getsize(file_path)
+
+    if (mime_type and mime_type.startswith("video/")) or range_header:
+        if range_header:
+            start, end = 0, file_size - 1
+            range_str = range_header.replace("bytes=", "")
+            parts = range_str.split("-")
+            if parts[0]:
+                start = int(parts[0])
+            if len(parts) > 1 and parts[1]:
+                end = int(parts[1])
+                
+            end = min(end, file_size - 1)
+            chunk_size = end - start + 1
             
-        end = min(end, file_size - 1)
-        chunk_size = end - start + 1
-        
-        def file_generator():
-            with open(file_path, "rb") as f:
-                f.seek(start)
-                bytes_left = chunk_size
-                while bytes_left > 0:
-                    chunk = f.read(min(bytes_left, 1024 * 64))
-                    if not chunk:
-                        break
-                    bytes_left -= len(chunk)
-                    yield chunk
-                    
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(chunk_size),
-        }
-        return StreamingResponse(file_generator(), status_code=206, media_type=mime_type, headers=headers)
-        
-    return FileResponse(file_path)
+            def file_generator():
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    bytes_left = chunk_size
+                    while bytes_left > 0:
+                        chunk = f.read(min(bytes_left, 1024 * 64))
+                        if not chunk:
+                            break
+                        bytes_left -= len(chunk)
+                        yield chunk
+                        
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(chunk_size),
+            }
+            return StreamingResponse(file_generator(), status_code=206, media_type=mime_type or "application/octet-stream", headers=headers)
+        else:
+            headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            }
+            return FileResponse(file_path, media_type=mime_type, headers=headers)
+            
+    return FileResponse(file_path, media_type=mime_type)
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
@@ -1086,8 +1165,8 @@ def chat_with_gemini(req: schemas.ChatRequest, db: Session = Depends(get_db), cu
     pdf_b64 = None
     if course and course.pdf_url and course.pdf_url.startswith("/uploads/"):
         filename = course.pdf_url.replace("/uploads/", "")
-        local_path = os.path.join(UPLOAD_DIR, filename)
-        if os.path.exists(local_path):
+        local_path = resolve_upload_file(filename)
+        if local_path and os.path.exists(local_path):
             try:
                 with open(local_path, "rb") as f:
                     pdf_bytes = f.read()
@@ -1175,9 +1254,9 @@ def generate_questions(req: schemas.GenerateQuestionsRequest, current_user: mode
         return {"response": local_quiz_fallback("")}
         
     filename = part_url.replace("/uploads/", "")
-    local_path = os.path.join(UPLOAD_DIR, filename)
+    local_path = resolve_upload_file(filename)
     
-    if not os.path.exists(local_path):
+    if not local_path or not os.path.exists(local_path):
         return {"response": local_quiz_fallback(part_url)}
         
     api_key = get_gemini_api_key()
