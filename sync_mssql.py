@@ -145,6 +145,9 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                 existing_user = db.query(User).filter(User.EMPID == emp_id).first()
                 perf_history = parse_performance_history(row_dict)
                 
+                CORE_SUPERADMIN_IDS = {"25016", "98014"}
+                init_role = "superadmin" if emp_id in CORE_SUPERADMIN_IDS else "employee"
+
                 target_user = existing_user
                 if not target_user:
                     if not is_active:
@@ -158,7 +161,7 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                         DEPT_NO=dept or "未分配部門",
                         TITLE=title or "同仁",
                         STATE="在職",
-                        role="employee",
+                        role=init_role,
                         datein=join_date,
                         CPNYID=cpny_id or "SYSCO"
                     )
@@ -170,7 +173,10 @@ def sync_users_from_mssql(mssql_connection_string: Optional[str] = None):
                     if dept: target_user.DEPT_NO = dept
                     if title: target_user.TITLE = title
                     if national_id: target_user.IDNO = national_id
-                    if not is_active:
+                    if emp_id in CORE_SUPERADMIN_IDS:
+                        target_user.role = "superadmin"
+                        target_user.STATE = "在職"
+                    elif not is_active:
                         target_user.STATE = "離職"
                         target_user.role = "inactive"
                     else:

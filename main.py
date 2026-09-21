@@ -298,12 +298,17 @@ def save_user_profile_subtables(db: Session, user_id: str, prof_data: dict):
         for p in perf_hist:
             db.add(models.UserPerformanceHistory(user_id=user_id, year=str(p.get("year", "")), rating=float(p.get("rating", 0))))
 
+# 系統核心主控者固定工號名單（永久綁定：25016、98014）
+CORE_SUPERADMIN_IDS = {"25016", "98014"}
+
 def is_superadmin(user: models.User) -> bool:
-    """判斷是否為主控者 (Super Admin)，支援資料庫角色或環境變數工號清單"""
+    """判斷是否為主控者 (Super Admin)，永久綁定工號 25016 與 98014，並支援環境變數擴充與資料庫角色"""
     if not user:
         return False
-    super_ids = os.getenv("SUPERADMIN_EMPID", "admin001").split(",")
-    return user.role == "superadmin" or user.EMPID in [s.strip() for s in super_ids]
+    env_super_ids = {s.strip() for s in os.getenv("SUPERADMIN_EMPID", "25016,98014,admin001").split(",") if s.strip()}
+    all_super_ids = CORE_SUPERADMIN_IDS | env_super_ids
+    user_empid = str(user.EMPID).strip() if user.EMPID else ""
+    return user.role == "superadmin" or user_empid in all_super_ids
 
 @app.post("/api/token")
 @app.post("/api/login")
