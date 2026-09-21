@@ -47,69 +47,122 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 import urllib.parse
 import unicodedata
 
+def simplify_name(s: str) -> str:
+    return (unicodedata.normalize('NFKC', s)
+            .lower()
+            .replace(' ', '')
+            .replace('_', '')
+            .replace('-', '')
+            .replace('（', '(')
+            .replace('）', ')')
+            .replace('[', '(')
+            .replace(']', ')')
+            .replace('【', '(')
+            .replace('】', ')'))
+
 def resolve_upload_file(subpath: str) -> Optional[str]:
-    """彈性且安全地解析上傳檔案的本機路徑（支援中文、URL 編碼、全半形括號及空白字元）"""
-    candidates = [
+    """彈性且安全地解析上傳檔案的本機路徑（支援中文、URL 編碼、全半形括號及子目錄穿透）"""
+    raw_candidates = [
         subpath,
         urllib.parse.unquote(subpath),
         urllib.parse.unquote_plus(subpath),
     ]
     
-    # 1. 直接與 URL 解碼比對
-    for cand in candidates:
+    # 1. 嘗試直接路徑比對
+    for cand in raw_candidates:
         cand_norm = os.path.normpath(os.path.join(UPLOAD_DIR, cand))
         if cand_norm.startswith(UPLOAD_DIR) and os.path.isfile(cand_norm):
             return cand_norm
 
-    # 2. Unicode 各種標準正規化 (NFC / NFKC / NFD / NFKD)
-    for cand in list(candidates):
+    # 2. Unicode 正規化嘗試
+    for cand in list(raw_candidates):
         for form in ['NFC', 'NFKC', 'NFD', 'NFKD']:
             norm_cand = unicodedata.normalize(form, cand)
             cand_norm = os.path.normpath(os.path.join(UPLOAD_DIR, norm_cand))
             if cand_norm.startswith(UPLOAD_DIR) and os.path.isfile(cand_norm):
                 return cand_norm
 
-    # 3. 容錯：針對目錄內檔案名稱進行微小字元容錯（忽略全半形括號差異、多餘空格等）
-    decoded = urllib.parse.unquote(subpath)
-    clean_subpath = decoded.replace('\\', '/')
-    parts = clean_subpath.split('/')
-    if len(parts) > 1:
-        sub_dir = os.path.join(UPLOAD_DIR, *parts[:-1])
-        target_name = parts[-1]
-    else:
-        sub_dir = UPLOAD_DIR
-        target_name = parts[0]
+    # 3. 子目錄穿透嘗試 (例如 videos/xxx 找不到時，嘗試 uploads/xxx；反之亦然)
+    decoded = urllib.parse.unquote(subpath).replace('\\', '/')
+    filename_only = os.path.basename(decoded)
+    
+    search_dirs = [
+        UPLOAD_DIR,
+        os.path.join(UPLOAD_DIR, "videos"),
+        os.path.join(UPLOAD_DIR, "documents"),
+        os.path.join(UPLOAD_DIR, "images")
+    ]
+    
+    target_simple = simplify_name(filename_only)
+    
+    # 遍歷常用目錄
+    for sdir in search_dirs:
+        if os.path.isdir(sdir):
+            try:
+                for fname in os.listdir(sdir):
+                    fpath = os.path.join(sdir, fname)
+                    if os.path.isfile(fpath) and simplify_name(fname) == target_simple:
+                        return fpath
+            except Exception:
+                pass
 
-    if os.path.isdir(sub_dir):
-        def simplify(s: str) -> str:
-            return (unicodedata.normalize('NFKC', s)
-                    .lower()
-                    .replace(' ', '')
-                    .replace('_', '')
-                    .replace('-', '')
-                    .replace('（', '(')
-                    .replace('）', ')')
-                    .replace('[', '(')
-                    .replace(']', ')'))
+    # 4. 全域遞迴搜尋 UPLOAD_DIR (終極容錯)
+    for root, dirs, files in os.walk(UPLOAD_DIR):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            if simplify_name(fname) == target_simple:
+                return fpath
 
-        simplified_target = simplify(target_name)
-        try:
-            for fname in os.listdir(sub_dir):
-                if simplify(fname) == simplified_target:
-                    found = os.path.join(sub_dir, fname)
-                    if os.path.isfile(found):
-                        return found
-        except Exception:
-            pass
+    # 5. 模糊關鍵字匹配 (若完整比對沒找到，針對同副檔名且關鍵字高度重疊者)
+    ext = os.path.splitext(filename_only)[1].lower()
+    if ext in [".mp4", ".webm", ".pdf", ".png", ".jpg"]:
+        core_keyword = target_simple.replace(ext.replace('.', ''), '')
+        if len(core_keyword) >= 3:
+            for root, dirs, files in os.walk(UPLOAD_DIR):
+                for fname in files:
+                    if fname.lower().endswith(ext):
+                        fname_simple = simplify_name(fname)
+                        if core_keyword[:4] in fname_simple or core_keyword in fname_simple:
+                            return os.path.join(root, fname)
 
     return None
+
+@app.get("/api/diagnose/uploads")
+def diagnose_uploads():
+    """診斷端點：查看 AP 伺服器本機 uploads 目錄內的真實檔案結構"""
+    file_tree = []
+    if os.path.exists(UPLOAD_DIR):
+        for root, dirs, files in os.walk(UPLOAD_DIR):
+            for f in files:
+                full_p = os.path.join(root, f)
+                rel_p = os.path.relpath(full_p, UPLOAD_DIR)
+                file_tree.append({
+                    "path": rel_p.replace('\\', '/'),
+                    "size": os.path.getsize(full_p),
+                    "full_path": full_p
+                })
+    return {
+        "upload_dir": UPLOAD_DIR,
+        "exists": os.path.exists(UPLOAD_DIR),
+        "total_files": len(file_tree),
+        "files": file_tree
+    }
 
 @app.get("/uploads/{subpath:path}")
 def serve_upload(subpath: str, request: Request):
     file_path = resolve_upload_file(subpath)
     if not file_path:
-        raise HTTPException(status_code=404, detail="檔案不存在")
+        avail = []
+        try:
+            for root, _, files in os.walk(UPLOAD_DIR):
+                for f in files:
+                    avail.append(os.path.relpath(os.path.join(root, f), UPLOAD_DIR))
+        except Exception:
+            pass
+        logging.warning(f"[UPLOAD_404] 找不到檔案: subpath='{subpath}', 目前 UPLOAD_DIR 現存檔案: {avail}")
+        raise HTTPException(status_code=404, detail=f"檔案不存在: {subpath}")
         
+    logging.info(f"[UPLOAD_200] 成功讀取檔案: '{subpath}' -> '{file_path}'")
     lower_path = file_path.lower()
     if lower_path.endswith(".mp4"):
         mime_type = "video/mp4"
