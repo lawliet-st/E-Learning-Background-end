@@ -28,6 +28,9 @@ class MergeUploadRequest(BaseModel):
     total_chunks: int
     expected_size: Optional[int] = None
 
+class UpdateUserRoleRequest(BaseModel):
+    role: str
+
 class ChatRequest(BaseModel):
     courseTitle: str
     question: str
